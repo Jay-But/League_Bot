@@ -7,6 +7,50 @@ import os
 from datetime import datetime
 import pytz
 import asyncio
+from datetime import timezone # Added timezone, datetime is already imported by from datetime import datetime
+# os and discord are already imported
+
+# Logger utility code
+LOG_DIR = "guild_logs"
+
+def ensure_log_dir():
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+
+def format_log_message(user: discord.User | discord.Member, command_name: str, outcome: str, details: dict) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    user_info = f"{user.name}#{user.discriminator} ({user.id})"
+    if command_name.startswith('/'):
+        display_command_name = command_name
+    else:
+        display_command_name = f"/{command_name}" # Buttons won't have /
+
+    details_str_parts = []
+    for k, v in details.items():
+        if isinstance(v, str) and len(v) > 75:
+            details_str_parts.append(f"{k}={v[:75]}...")
+        else:
+            details_str_parts.append(f"{k}={v}")
+    details_str = ", ".join(details_str_parts)
+
+    return f"[{timestamp}] [User: {user_info}] [Command: {display_command_name}] [Outcome: {outcome}] Details: {{{details_str}}}"
+
+def log_command(interaction: discord.Interaction, command_name: str, outcome: str, **details) -> None:
+    ensure_log_dir()
+    if interaction.guild:
+        guild_id = str(interaction.guild.id)
+    else:
+        guild_id = "dm_logs"
+    log_file_path = os.path.join(LOG_DIR, f"{guild_id}.log")
+
+    user = interaction.user
+    message = format_log_message(user, command_name, outcome, details)
+
+    try:
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            f.write(message + "\n")
+    except Exception as e:
+        print(f"Error writing to guild log {log_file_path}: {e}")
 
 # CONFIG_FILE and load_config() removed as per refactoring plan
 
@@ -132,30 +176,37 @@ class FreeAgencyCog(commands.Cog):
         app_commands.Choice(name="Team Staff", value="team_staff")
     ])
     async def freeagency(self, interaction: discord.Interaction, form_type: str):
+        command_name = "/freeagency"
         # Check if guild is configured
         config = self.get_guild_config(interaction.guild.id)
-        if not config:
+        if not config: # Should this be logged? If no config, guild_id for log might be an issue unless handled by log_command
             await interaction.response.send_message("❌ This server hasn't been configured yet. Please ask an administrator to run `/setup` first.", ephemeral=True)
+            # log_command might still work if interaction.guild is present even if config is empty
+            log_command(interaction, command_name, "Failed: Server not configured (no setup file)", form_type=form_type)
             return
 
         team_role, team_name, _ = self.get_team_info(interaction.user)
         teams = config.get("teams", [])
-        has_team = team_name in teams
+        has_team = team_name in teams if team_name else False # Ensure team_name is not None
         is_staff = self.has_franchise_role(interaction.user)
         is_verified = self.has_verified_role(interaction.user)
 
         if form_type == "free_agent":
             if not is_verified:
                 await interaction.response.send_message("You must have the Verified role to submit a Free Agent form.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: User not verified for Free Agent form", form_type=form_type)
                 return
             if has_team:
                 await interaction.response.send_message("You cannot submit a Free Agent form while on a team.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: User on a team cannot submit Free Agent form", form_type=form_type, user_team=team_name)
                 return
         elif form_type == "player" and not has_team:
             await interaction.response.send_message("You must be on a team to submit a Player form.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: User not on a team for Player form", form_type=form_type)
             return
         elif form_type == "team_staff" and not is_staff:
             await interaction.response.send_message("Only franchise staff can submit a Team Staff form.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: User not staff for Team Staff form", form_type=form_type)
             return
 
         questions = {
@@ -217,11 +268,13 @@ class FreeAgencyCog(commands.Cog):
 
                 if not free_agency_channel_id:
                     await interaction.response.send_message("❌ Free Agency channel not configured. Please ask an administrator to run `/setup` and configure the Free Agency channel.", ephemeral=True)
+                    log_command(interaction, "/freeagency (modal)", "Failed: Free Agency channel not configured in modal", form_type=self.form_type, submitter_id=interaction.user.id)
                     return
 
                 free_agency_channel = interaction.guild.get_channel(int(free_agency_channel_id))
                 if not free_agency_channel:
                     await interaction.response.send_message("❌ Free Agency channel not found. The configured channel may have been deleted.", ephemeral=True)
+                    log_command(interaction, "/freeagency (modal)", "Failed: Free Agency channel not found in modal", form_type=self.form_type, channel_id=free_agency_channel_id, submitter_id=interaction.user.id)
                     return
 
                 view = discord.ui.View(timeout=None)  # Persistent view
@@ -252,6 +305,8 @@ class FreeAgencyCog(commands.Cog):
 
                 await free_agency_channel.send(embed=embed, view=view)
                 await interaction.response.send_message("✅ Form submitted successfully!", ephemeral=True)
+                log_command(interaction, "/freeagency (modal)", "Form submitted successfully", form_type=self.form_type, submitter_id=interaction.user.id)
+                # self.cog.log_action is for embed channel logs, distinct from file logs
                 await self.cog.log_action(
                     interaction.guild,
                     "Form Submitted",
@@ -263,32 +318,40 @@ class FreeAgencyCog(commands.Cog):
 
     def offer_button_callback(self, submitter: discord.Member):
         async def callback(interaction: discord.Interaction):
+            button_command_name = "offer_button" # For logging context
             if not self.has_franchise_role(interaction.user):
                 await interaction.response.send_message("Only franchise roles can make offers.", ephemeral=True)
+                log_command(interaction, button_command_name, "Failed: Permission denied - Only franchise roles can make offers", submitter_id=submitter.id if submitter else "Unknown")
                 return
             await interaction.response.send_message(
                 f"Use `/offer {submitter.id}` to send a contract offer to {submitter.mention}.",
                 ephemeral=True
             )
+            log_command(interaction, button_command_name, "Success: Guided user to /offer command", submitter_id=submitter.id if submitter else "Unknown")
         return callback
 
     def trade_button_callback(self, submitter: discord.Member):
         async def callback(interaction: discord.Interaction):
+            button_command_name = "trade_button" # For logging context
             if not self.has_franchise_role(interaction.user):
                 await interaction.response.send_message("Only franchise roles can propose trades.", ephemeral=True)
+                log_command(interaction, button_command_name, "Failed: Permission denied - Only franchise roles can propose trades", submitter_id=submitter.id if submitter else "Unknown")
                 return
             team_role, team_name, _ = self.get_team_info(submitter)
             if not team_name:
                 await interaction.response.send_message(f"{submitter.display_name} is not on a team.", ephemeral=True)
+                log_command(interaction, button_command_name, "Failed: Submitter not on a team for trade", submitter_id=submitter.id if submitter else "Unknown", submitter_name=submitter.display_name if submitter else "Unknown")
                 return
             await interaction.response.send_message(
                 f"Use `/trade offered_player:<your_player> targeted_team:{team_name} targeted_player:{submitter.id}` to propose a trade for {submitter.mention}.",
                 ephemeral=True
             )
+            log_command(interaction, button_command_name, "Success: Guided user to /trade command", submitter_id=submitter.id if submitter else "Unknown")
         return callback
 
-    def delete_button_callback(self, submitter: discord.Member):
+    def delete_button_callback(self, submitter: discord.Member): # submitter here is the original form author
         async def callback(interaction: discord.Interaction):
+            button_command_name = "delete_button" # For logging context
             # Extract author ID from embed author name
             author_name = interaction.message.embeds[0].author.name
             # Parse the ID from the format "Display Name (ID)"
@@ -296,13 +359,18 @@ class FreeAgencyCog(commands.Cog):
 
             if interaction.user.id != author_id:
                 await interaction.response.send_message("Only the form submitter can delete this form.", ephemeral=True)
+                log_command(interaction, button_command_name, "Failed: Permission denied - Not form submitter", original_submitter_id=author_id, deleter_id=interaction.user.id)
                 return
+
+            form_title_for_log = interaction.message.embeds[0].title if interaction.message.embeds else "Unknown title"
             await interaction.message.delete()
             await interaction.response.send_message("Form deleted successfully.", ephemeral=True)
+            log_command(interaction, button_command_name, "Success: Form deleted by submitter", original_submitter_id=author_id, deleter_id=interaction.user.id, form_title=form_title_for_log)
+            # self.log_action is for embed channel logs
             await self.log_action(
                 interaction.guild,
                 "Form Deleted",
-                f"{interaction.user.display_name} deleted their {interaction.message.embeds[0].title}"
+                f"{interaction.user.display_name} deleted their {form_title_for_log}"
             )
         return callback
 
@@ -319,6 +387,7 @@ class FreeAgencyCog(commands.Cog):
     @app_commands.autocomplete(team=team_autocomplete)
     async def teamclaim(self, interaction: discord.Interaction, player: discord.Member, team: str):
         await interaction.response.send_message("This command is under development.", ephemeral=True)
+        log_command(interaction, "/teamclaim", "Attempted: Command under development", player_id=player.id, player_name=player.display_name, team=team)
 
 async def setup(bot):
     await bot.add_cog(FreeAgencyCog(bot))

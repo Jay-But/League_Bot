@@ -7,6 +7,49 @@ from datetime import datetime, timedelta
 import pytz
 import asyncio
 from utils.team_utils import team_autocomplete
+from datetime import timezone # Added timezone, datetime is already imported
+
+# Logger utility code
+LOG_DIR = "guild_logs"
+
+def ensure_log_dir():
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+
+def format_log_message(user: discord.User | discord.Member, command_name: str, outcome: str, details: dict) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    user_info = f"{user.name}#{user.discriminator} ({user.id})"
+    if command_name.startswith('/'):
+        display_command_name = command_name
+    else:
+        display_command_name = f"/{command_name}"
+
+    details_str_parts = []
+    for k, v in details.items():
+        if isinstance(v, str) and len(v) > 75:
+            details_str_parts.append(f"{k}={v[:75]}...")
+        else:
+            details_str_parts.append(f"{k}={v}")
+    details_str = ", ".join(details_str_parts)
+
+    return f"[{timestamp}] [User: {user_info}] [Command: {display_command_name}] [Outcome: {outcome}] Details: {{{details_str}}}"
+
+def log_command(interaction: discord.Interaction, command_name: str, outcome: str, **details) -> None:
+    ensure_log_dir()
+    if interaction.guild:
+        guild_id = str(interaction.guild.id)
+    else:
+        guild_id = "dm_logs"
+    log_file_path = os.path.join(LOG_DIR, f"{guild_id}.log")
+
+    user = interaction.user
+    message = format_log_message(user, command_name, outcome, details)
+
+    try:
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            f.write(message + "\n")
+    except Exception as e:
+        print(f"Error writing to guild log {log_file_path}: {e}")
 
 def load_guild_config(guild_id):
     config_file = f"config/setup_{str(guild_id)}.json"
@@ -51,8 +94,10 @@ class GameManagementCog(commands.Cog):
     @app_commands.checks.has_any_role("Pickup Host")
     @app_commands.describe(link="The link to the pickup game")
     async def pickup(self, interaction: discord.Interaction, link: str):
+        command_name = "/pickup"
         if not link.startswith("http"):
             await interaction.response.send_message("Please provide a valid URL.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: Invalid URL provided", link=link)
             return
         embed = discord.Embed(
             title="Pickup Game Announcement",
@@ -68,6 +113,8 @@ class GameManagementCog(commands.Cog):
         if pickups_channel:
             await pickups_channel.send(embed=embed)
         await interaction.response.send_message("Pickup game announced!", ephemeral=True)
+        log_command(interaction, command_name, "Pickup game announced successfully", link=link)
+        # self.log_action is for embed channel logs, distinct from file logs
         await self.log_action(interaction.guild, "Pickup Game", f"Hosted by {interaction.user.display_name}")
 
     # CPU Break: Pause after /pickup
@@ -115,11 +162,16 @@ class GameManagementCog(commands.Cog):
         thread: str = None
     ):
         guild_config = load_guild_config(interaction.guild.id)
+        command_name = "/scorereport"
+        log_params = {'team1': team1, 'team2': team2, 'score_team1': score_team1, 'score_team2': score_team2, 'time': time, 'date': date, 'timezone': timezone, 'channel': channel, 'thread': thread}
+
         if team1 not in guild_config.get("teams", []) or team2 not in guild_config.get("teams", []):
             await interaction.response.send_message("Invalid teams. Must be created via /setup.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: Invalid teams", **log_params)
             return
         if score_team1 < 0 or score_team2 < 0:
             await interaction.response.send_message("Scores must be non-negative.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: Scores must be non-negative", **log_params)
             return
 
         tz = pytz.timezone(timezone)
@@ -139,6 +191,7 @@ class GameManagementCog(commands.Cog):
             )
         except ValueError:
             await interaction.response.send_message("Invalid time format.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: Invalid time format", **log_params)
             return
 
         team1_role = discord.utils.get(interaction.guild.roles, name=team1)
@@ -210,8 +263,10 @@ class GameManagementCog(commands.Cog):
                 target = interaction.guild.get_channel(int(score_report_channels[0]))
             else:
                 await interaction.response.send_message("No score report channel configured. Please specify a channel or thread.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: No score report channel configured", **log_params)
                 return
 
+        target_id_for_log = target.id if target else "N/A"
         if target:
             await target.send(embed=embed, view=view)
         # Update team records based on scores
@@ -244,11 +299,14 @@ class GameManagementCog(commands.Cog):
         save_guild_config(interaction.guild.id, guild_config)
 
         await interaction.response.send_message("Game report submitted!", ephemeral=True)
+        log_command(interaction, command_name, "Game report submitted successfully", **log_params, report_channel_id=target_id_for_log, winner=winner if winner else "Tie/None")
         
-        log_details = f"Reported: {team1} {score_team1} vs {team2} {score_team2}"
+        # self.log_action is for embed channel logs
+        log_details_embed = f"Reported: {team1} {score_team1} vs {team2} {score_team2}"
         if winner:
-            log_details += f" | Winner: {winner}"
-        await self.log_action(interaction.guild, "Score Report", log_details)
+            log_details_embed += f" | Winner: {winner}"
+        await self.log_action(interaction.guild, "Score Report", log_details_embed)
+
 
     # CPU Break: Pause after /scorereport
     # asyncio.sleep(2) simulated during code generation
@@ -261,34 +319,45 @@ class GameManagementCog(commands.Cog):
     )
     async def sendscorereport(self, interaction: discord.Interaction, channels: str = None, thread: str = None):
         guild_config = load_guild_config(interaction.guild.id)
+        command_name = "/sendscorereport"
+        log_params = {'channels_input': channels, 'thread_input': thread}
+
         if channels:
             try:
                 channel_ids = [int(cid.strip()) for cid in channels.split(",") if cid.strip().isdigit()]
                 if not channel_ids:
                     await interaction.response.send_message("No valid channel IDs provided.", ephemeral=True)
+                    log_command(interaction, command_name, "Failed: No valid channel IDs provided", **log_params)
                     return
 
-                if "channels" not in guild_config: # ensure 'channels' key exists
+                if "channels" not in guild_config:
                     guild_config["channels"] = {}
-                guild_config["channels"]["score_report_channels"] = channel_ids # Store under 'channels' key
+                guild_config["channels"]["score_report_channels"] = channel_ids
                 save_guild_config(interaction.guild.id, guild_config)
                 await interaction.response.send_message(
                     f"Score reports set for channels: {', '.join(f'<#{cid}>' for cid in channel_ids)}",
                     ephemeral=True
                 )
-            except ValueError:
+                log_command(interaction, command_name, "Score report channels configured successfully", configured_channel_ids=channel_ids)
+            except ValueError: # Should not happen with isdigit check, but good for safety
                 await interaction.response.send_message("Invalid channel IDs provided.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: Invalid character in channel IDs", **log_params)
         elif thread:
             if not thread.isdigit():
                 await interaction.response.send_message("Invalid thread ID.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: Invalid thread ID (not digit)", **log_params)
                 return
-            if "channels" not in guild_config: # ensure 'channels' key exists
+            if "channels" not in guild_config:
                 guild_config["channels"] = {}
-            guild_config["channels"]["score_report_thread"] = int(thread) # Store under 'channels' key
+            guild_config["channels"]["score_report_thread"] = int(thread)
             save_guild_config(interaction.guild.id, guild_config)
             await interaction.response.send_message(f"Score reports set for thread: <#{thread}>", ephemeral=True)
+            log_command(interaction, command_name, "Score report thread configured successfully", configured_thread_id=thread)
         else:
             await interaction.response.send_message("Please provide channels or a thread ID.", ephemeral=True)
+            log_command(interaction, command_name, "Failed: No channels or thread ID provided", **log_params)
+
+        # self.log_action is for embed channel logs
         await self.log_action(interaction.guild, "Score Report Config", f"Channels: {channels}, Thread: {thread}")
 
     # CPU Break: Pause after /sendscorereport
@@ -350,17 +419,20 @@ class GameManagementCog(commands.Cog):
                 )
                 await channel.send(embed=embed, view=view)
         await interaction.response.send_message("Leaderboard updated!", ephemeral=True)
+        log_command(interaction, "/leaderboard", "Player leaderboard displayed successfully")
+        # self.log_action is for embed channel logs
         await self.log_action(interaction.guild, "Leaderboard", "Player leaderboard updated")
 
     # CPU Break: Pause after /leaderboard
     # asyncio.sleep(2) simulated during code generation
 
     @app_commands.command(name="teamleaderboard", description="Show team win/loss ratios.")
-    async def teamleaderboard(self, interaction: discord.Interaction):
-        # Placeholder for team records
+    async def teamleaderboard(self, interaction: discord.Interaction): # This is the first teamleaderboard command
+        command_name = "/teamleaderboard" # Differentiating for logs, though it's an overloaded command name
+        # Placeholder for team records - this version just displays, doesn't record
         embed = discord.Embed(
             title="Team Leaderboard",
-            description="No team records available yet.",
+            description="No team records available yet.", # This version might be outdated if the other one works
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
@@ -380,45 +452,60 @@ class GameManagementCog(commands.Cog):
             if scores_channel_id:
                 target_channel_ids.append(scores_channel_id)
 
+        sent_to_channels = []
         for channel_id in target_channel_ids:
             channel = interaction.guild.get_channel(int(channel_id))
             if channel:
                 await channel.send(embed=embed)
+                sent_to_channels.append(str(channel.id))
+
         await interaction.response.send_message("Team leaderboard updated!", ephemeral=True)
-        await self.log_action(interaction.guild, "Team Leaderboard", "Team leaderboard updated")
+        log_command(interaction, command_name, "Team leaderboard (display only) shown", sent_to_channel_ids=sent_to_channels if sent_to_channels else "None")
+        # self.log_action is for embed channel logs
+        await self.log_action(interaction.guild, "Team Leaderboard", "Team leaderboard (display only) updated")
+
 
     @app_commands.command(name="teamscore", description="Record a score for a team.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(home_team="The home team", away_team="The away team", home_score="Home team score", away_score="Away team score")
     @app_commands.autocomplete(home_team=team_autocomplete, away_team=team_autocomplete)
     async def teamscore(self, interaction: discord.Interaction, home_team: str, away_team: str, home_score: int, away_score: int):
+        log_command(interaction, "/teamscore", "Attempted: Command not implemented", home_team=home_team, away_team=away_team, home_score=home_score, away_score=away_score)
         pass
 
     @app_commands.command(name="teamstats", description="Show statistics for a team.")
     @app_commands.describe(team="The team to show stats for")
     @app_commands.autocomplete(team=team_autocomplete)
     async def teamstats(self, interaction: discord.Interaction, team: str):
+        log_command(interaction, "/teamstats", "Attempted: Command not implemented", team=team)
         pass
 
     @app_commands.command(name="teamleaderboard", description="Show team win/loss leaderboard and record scores.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(winning_team="The team that won (optional)", losing_team="The team that lost (optional)")
     @app_commands.autocomplete(winning_team=team_autocomplete, losing_team=team_autocomplete)
-    async def teamleaderboard(self, interaction: discord.Interaction, winning_team: str = None, losing_team: str = None):
+    async def teamleaderboard(self, interaction: discord.Interaction, winning_team: str = None, losing_team: str = None): # This is the second teamleaderboard command
         guild_config = load_guild_config(interaction.guild.id)
+        command_name = "/teamleaderboard" # Same command name, but logic differs
+        log_params = {'winning_team_input': winning_team, 'losing_team_input': losing_team}
+
         teams = guild_config.get("teams", [])
         
         if not teams:
-            await interaction.response.send_message("No teams found. Please add teams using /addteam.", ephemeral=True)
+            await interaction.response.send_message("No teams found. Please add teams using /setupteams.", ephemeral=True) # Corrected to /setupteams
+            log_command(interaction, command_name, "Failed: No teams found", **log_params)
             return
 
+        score_recorded_message = ""
         # If both teams provided, record the win/loss
         if winning_team and losing_team:
             if winning_team not in teams or losing_team not in teams:
-                await interaction.response.send_message("Invalid teams. Must be created via /addteam.", ephemeral=True)
+                await interaction.response.send_message("Invalid teams. Must be created via /setupteams.", ephemeral=True) # Corrected
+                log_command(interaction, command_name, "Failed: Invalid winning or losing team", **log_params)
                 return
             if winning_team == losing_team:
                 await interaction.response.send_message("Winning and losing team cannot be the same.", ephemeral=True)
+                log_command(interaction, command_name, "Failed: Winning and losing team cannot be the same", **log_params)
                 return
                 
             # Initialize team records if not exists
@@ -488,12 +575,28 @@ class GameManagementCog(commands.Cog):
         
         embed.set_footer(text="Use /teamleaderboard <winning_team> <losing_team> to record a game result")
         
-        if winning_team and losing_team:
-            await interaction.edit_original_response(embed=embed)
-        else:
+        if winning_team and losing_team: # A score was recorded
+            # The ephemeral message about recording is sent before this,
+            # so we edit the original response which would have been the leaderboard.
+            # If interaction.response.is_done() is false, it implies the ephemeral message was it.
+            # This part of the logic for ephemeral vs followup might need review based on how it behaves.
+            # For now, assuming edit_original_response is for an existing leaderboard message if one was sent.
+            # However, the ephemeral "Recorded" message is likely the first response.
+            # If so, a new message or followup should be used for the leaderboard itself.
+            # Let's assume the ephemeral "Recorded" is fine and we send a new message for the leaderboard if scores were input.
+            # await interaction.edit_original_response(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=False) # Send leaderboard as a new message
+            score_recorded_message = f"Recorded score ({winning_team} def. {losing_team}) and "
+        else: # Just displaying leaderboard
             await interaction.response.send_message(embed=embed)
+
+        log_outcome_message = f"{score_recorded_message}Displayed team leaderboard."
+        final_log_params = {'winning_team': winning_team, 'losing_team': losing_team} if (winning_team and losing_team) else {}
+        log_command(interaction, command_name, log_outcome_message, **final_log_params)
             
+        # self.log_action is for embed channel logs
         await self.log_action(interaction.guild, "Leaderboard Viewed", f"Teams: {len(teams)}")
+
 
     # CPU Break: Pause after /teamleaderboard
     # asyncio.sleep(2) simulated during code generation

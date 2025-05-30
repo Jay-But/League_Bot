@@ -3,7 +3,24 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Added timezone
+
+LOG_DIR = "guild_logs"
+
+def ensure_log_dir():
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+
+def log_guild_event(guild_id: int, event_message: str, user_info: str = "System") -> None:
+    ensure_log_dir()
+    log_file_path = os.path.join(LOG_DIR, f"{guild_id}.log")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    try:
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] [User: {user_info}] [Event: {event_message}]\n")
+    except Exception as e:
+        print(f"Error writing to guild log {log_file_path}: {e}")
 
 class SetupCog(commands.Cog):
     def __init__(self, bot):
@@ -611,6 +628,21 @@ class SetupView(discord.ui.View):
         embed.add_field(name="Free Agency Channel", value="✅ Configured" if self.channel_selections.get("Free Agency") else "❌ Not configured", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=None)
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        # Log the event to a guild-specific file
+        log_guild_event(guild.id, "Bot joined server")
+
+        # Optional: Send a welcome message to the guild's system channel or owner
+        # For now, focus is on logging. A welcome message can be a separate enhancement.
+        # Example:
+        # if guild.system_channel:
+        #     try:
+        #         await guild.system_channel.send(f"Thanks for adding me to {guild.name}! Please use `/setup` to configure me.")
+        #     except discord.Forbidden:
+        #         pass # Cannot send message
+        print(f"Bot joined {guild.name} (ID: {guild.id}). Log entry created.")
 
 async def setup(bot):
     await bot.add_cog(SetupCog(bot))
