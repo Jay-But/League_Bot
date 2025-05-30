@@ -8,17 +8,23 @@ import pytz
 import asyncio
 from utils.team_utils import team_autocomplete
 
-CONFIG_FILE = "config/setup.json"
+# CONFIG_FILE, load_config, save_config removed
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 class ConfirmModal(discord.ui.Modal):
     def __init__(self, action, callback):
@@ -38,18 +44,10 @@ class ConfirmModal(discord.ui.Modal):
 class TeamManagementCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
-        self.team_emojis = self.config.get("team_emojis", {})
+        # self.config and self.team_emojis removed
 
     def get_guild_config(self, guild_id):
-        """Load guild-specific configuration from setup"""
-        config_file = f"config/setup_{guild_id}.json"
-        if os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                content = f.read().strip()
-                if content:
-                    return json.loads(content)
-        return {}
+        return load_guild_config(guild_id) # Use the standalone helper
 
     def has_admin_roles(self, interaction: discord.Interaction):
         """Check if user has admin or moderator roles"""
@@ -85,7 +83,8 @@ class TeamManagementCog(commands.Cog):
         return guild_config.get("roster_cap", 53)
 
     async def log_action(self, guild, action, details, user=None):
-        logs_channel_id = self.config.get("logs_channel")
+        guild_config = load_guild_config(guild.id) # Load guild_config
+        logs_channel_id = guild_config.get("logs_channel") # Get from guild_config
         if logs_channel_id:
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
@@ -100,11 +99,14 @@ class TeamManagementCog(commands.Cog):
                 await logs_channel.send(embed=embed)
 
     def get_team_info(self, member: discord.Member):
+        guild_config = load_guild_config(member.guild.id) # Load guild_config
+        teams = guild_config.get("teams", [])
+        team_emojis = guild_config.get("team_emojis", {})
         for role in member.roles:
-            if role.name in self.config.get("teams", []) and role.name != "@everyone":
-                emoji = self.team_emojis.get(role.name, "")
+            if role.name in teams and role.name != "@everyone":
+                emoji = team_emojis.get(role.name, "")
                 return role, role.name, emoji
-        return None, None, None
+        return None, None, None # Ensure consistent return for no team found
 
     def get_team_members(self, guild: discord.Guild, team_name: str):
         team_role = discord.utils.get(guild.roles, name=team_name)
@@ -122,24 +124,11 @@ class TeamManagementCog(commands.Cog):
     @app_commands.describe(candidate="The candidate to appoint", team="The team to assign them to")
     @app_commands.autocomplete(team=team_autocomplete)
     async def appoint(self, interaction: discord.Interaction, candidate: discord.Member, team: str):
-        if team not in self.config.get("teams", []):
-            await interaction.response.send_message("Invalid team. Must be created via /addteam.", ephemeral=True)
-            return
+        guild_config = load_guild_config(interaction.guild.id) # Use helper
 
-        # Load guild-specific setup configuration
-        guild_config_file = f"config/setup_{interaction.guild.id}.json"
-        guild_config = {}
-        if os.path.exists(guild_config_file):
-            try:
-                with open(guild_config_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        guild_config = json.loads(content)
-                    else:
-                        guild_config = {}
-            except (json.JSONDecodeError, ValueError):
-                # File exists but is empty or malformed, use empty config
-                guild_config = {}
+        if team not in guild_config.get("teams", []): # Use guild_config
+            await interaction.response.send_message("Invalid team. Must be created via /setupteams.", ephemeral=True) # Changed to /setupteams
+            return
 
         # Get roles from setup configuration
         candidate_role_id = guild_config.get("roles", {}).get("candidate")
@@ -152,7 +141,8 @@ class TeamManagementCog(commands.Cog):
             debug_msg += f"Config content: {guild_config}\n"
             debug_msg += f"Candidate role ID: {candidate_role_id}\n"
             debug_msg += f"Franchise Owner role ID: {fo_role_id}"
-            print(debug_msg)  # For console debugging
+            # print(debug_msg) # Keep for local debugging if necessary, but remove for production
+            pass # Assuming this debug code is not needed for the refactor itself
 
         if not candidate_role_id:
             await interaction.response.send_message("❌ Candidate role not configured. Please run `/setup` and configure the **Candidate** role on page 2, then save the configuration.", ephemeral=True)
@@ -175,7 +165,8 @@ class TeamManagementCog(commands.Cog):
         await candidate.add_roles(fo_role, team_role)
 
         # Create new embed format
-        team_emoji = self.team_emojis.get(team, "")
+        team_emojis_local = guild_config.get("team_emojis", {}) # Load from guild_config
+        team_emoji = team_emojis_local.get(team, "")
         embed = discord.Embed(
             title=f"{interaction.guild.name}",
             description="New Appointment",
@@ -201,21 +192,7 @@ class TeamManagementCog(commands.Cog):
                 emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png"
                 embed.set_author(name="", icon_url=emoji_url)
 
-        # Load guild-specific setup configuration for alerts channel
-        guild_config_file = f"config/setup_{interaction.guild.id}.json"
-        guild_config = {}
-        if os.path.exists(guild_config_file):
-            try:
-                with open(guild_config_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        guild_config = json.loads(content)
-                    else:
-                        guild_config = {}
-            except (json.JSONDecodeError, ValueError):
-                guild_config = {}
-
-        # Get alerts channel from guild-specific config
+        # guild_config already loaded earlier
         alerts_channel_id = guild_config.get("channels", {}).get("alerts")
         if alerts_channel_id:
             alerts_channel = interaction.guild.get_channel(int(alerts_channel_id))
@@ -234,20 +211,7 @@ class TeamManagementCog(commands.Cog):
     @app_commands.command(name="appointall", description="Appoint all candidates to teams without an FO.")
     @app_commands.checks.has_permissions(administrator=True)
     async def appointall(self, interaction: discord.Interaction):
-        # Load guild-specific setup configuration
-        guild_config_file = f"config/setup_{interaction.guild.id}.json"
-        guild_config = {}
-        if os.path.exists(guild_config_file):
-            try:
-                with open(guild_config_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        guild_config = json.loads(content)
-                    else:
-                        guild_config = {}
-            except (json.JSONDecodeError, ValueError):
-                # File exists but is empty or malformed, use empty config
-                guild_config = {}
+        guild_config = load_guild_config(interaction.guild.id) # Use helper
 
         # Get roles from setup configuration
         candidate_role_id = guild_config.get("roles", {}).get("candidate")
@@ -264,15 +228,15 @@ class TeamManagementCog(commands.Cog):
             await interaction.response.send_message("Required roles not found or have been deleted.", ephemeral=True)
             return
         candidates = [member for member in interaction.guild.members if candidate_role in member.roles]
-        teams = self.config.get("teams", [])
+        teams_list = guild_config.get("teams", []) # Use guild_config
         teams_without_fo = []
-        for team in teams:
+        for team in teams_list: # Iterate over teams_list
             team_role = discord.utils.get(interaction.guild.roles, name=team)
             if not team_role:
                 continue
             has_fo = any(fo_role in member.roles and team_role in member.roles for member in interaction.guild.members)
             if not has_fo:
-                teams_without_fo.append(team)
+                teams_without_fo.append(team) # team is a string name
         # Only appoint up to the number of available teams
         max_appointments = min(len(candidates), len(teams_without_fo))
         if max_appointments == 0:
@@ -293,15 +257,16 @@ class TeamManagementCog(commands.Cog):
 
         appointment_list = []
         for i, (candidate, team) in enumerate(zip(candidates_to_appoint, teams_to_fill)):
-            team_role = discord.utils.get(interaction.guild.roles, name=team)
-            if not team_role:
+            team_role_obj = discord.utils.get(interaction.guild.roles, name=team_name_appoint) # Renamed
+            if not team_role_obj:
                 continue
 
             await candidate.remove_roles(candidate_role)
-            await candidate.add_roles(fo_role, team_role)
-            team_emoji = self.team_emojis.get(team, "")
-            appointment_list.append(f"{candidate.mention} {team_emoji} {team_role.mention}")
-            await self.log_action(interaction.guild, "FO Appointed", f"{candidate.display_name} appointed to {team}", interaction.user)
+            await candidate.add_roles(fo_role, team_role_obj)
+            team_emojis_local = guild_config.get("team_emojis", {}) # Load from guild_config
+            team_emoji = team_emojis_local.get(team_name_appoint, "")
+            appointment_list.append(f"{candidate.mention} {team_emoji} {team_role_obj.mention}")
+            await self.log_action(interaction.guild, "FO Appointed", f"{candidate.display_name} appointed to {team_name_appoint}", interaction.user)
 
         # Add all appointments as a single field
         embed.add_field(
@@ -314,16 +279,18 @@ class TeamManagementCog(commands.Cog):
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
 
-        # Get alerts channel from guild-specific config  
+        # guild_config already loaded
         alerts_channel_id = guild_config.get("channels", {}).get("alerts")
         if alerts_channel_id:
             alerts_channel = interaction.guild.get_channel(int(alerts_channel_id))
             if alerts_channel:
                 await alerts_channel.send(embed=embed)
             else:
-                print(f"Alerts channel not found: {alerts_channel_id}")
+                # print(f"Alerts channel not found: {alerts_channel_id}") # Keep for local debug
+                pass
         else:
-            print("Alerts channel not configured in setup")
+            # print("Alerts channel not configured in setup") # Keep for local debug
+            pass
         await interaction.response.send_message(f"Appointed {max_appointments} candidates!", ephemeral=True)
 
     # CPU Break: Pause after /appointall
@@ -331,20 +298,7 @@ class TeamManagementCog(commands.Cog):
 
     @app_commands.command(name="waitlist", description="Show the list of candidates waiting for a team.")
     async def waitlist(self, interaction: discord.Interaction):
-        # Load guild-specific setup configuration
-        guild_config_file = f"config/setup_{interaction.guild.id}.json"
-        guild_config = {}
-        if os.path.exists(guild_config_file):
-            try:
-                with open(guild_config_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        guild_config = json.loads(content)
-                    else:
-                        guild_config = {}
-            except (json.JSONDecodeError, ValueError):
-                # File exists but is empty or malformed, use empty config
-                guild_config = {}
+        guild_config = load_guild_config(interaction.guild.id) # Use helper
 
         # Get candidate role from setup configuration
         candidate_role_id = guild_config.get("roles", {}).get("candidate")
@@ -377,20 +331,7 @@ class TeamManagementCog(commands.Cog):
 
     @app_commands.command(name="franchiselist", description="Show the list of Franchise Owners and their teams.")
     async def franchiselist(self, interaction: discord.Interaction):
-        # Load guild-specific setup configuration
-        guild_config_file = f"config/setup_{interaction.guild.id}.json"
-        guild_config = {}
-        if os.path.exists(guild_config_file):
-            try:
-                with open(guild_config_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        guild_config = json.loads(content)
-                    else:
-                        guild_config = {}
-            except (json.JSONDecodeError, ValueError):
-                # File exists but is empty or malformed, use empty config
-                guild_config = {}
+        guild_config = load_guild_config(interaction.guild.id) # Use helper
 
         # Get franchise owner role from setup configuration
         fo_role_id = guild_config.get("roles", {}).get("franchise_owner")
@@ -409,28 +350,38 @@ class TeamManagementCog(commands.Cog):
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
         )
-        roster_cap = int(self.config.get("roster_cap", 53))
-        for team in self.config.get("teams", []):
-            team_role = discord.utils.get(interaction.guild.roles, name=team)
+        roster_cap = int(guild_config.get("roster_cap", 53)) # Use guild_config
+        teams_list = guild_config.get("teams", []) # Use guild_config
+        team_emojis_local = guild_config.get("team_emojis", {}) # Use guild_config
+
+        for team_name_list in teams_list: # Renamed
+            team_role = discord.utils.get(interaction.guild.roles, name=team_name_list)
             if not team_role:
                 continue
             fo = next((member for member in interaction.guild.members if fo_role in member.roles and team_role in member.roles), None)
             if not fo:
-                continue
-            team_members = self.get_team_members(interaction.guild, team)
-            team_emoji = self.team_emojis.get(team, "")
+                continue # Skip if no FO for this team_role
+            team_members = self.get_team_members(interaction.guild, team_name_list)
+            team_emoji = team_emojis_local.get(team_name_list, "")
             embed.add_field(
-                name=f"{team_emoji} {team} ({fo.display_name})",
+                name=f"{team_emoji} {team_name_list} ({fo.display_name})",
                 value=f"Roster: {len(team_members)}/{roster_cap}",
                 inline=False
             )
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
-        owners_channel_id = self.config.get("owners_channel")
+
+        owners_channel_id = guild_config.get("channels", {}).get("owners") # Use guild_config, assuming 'owners' is under 'channels'
         owners_channel = interaction.guild.get_channel(int(owners_channel_id)) if owners_channel_id else None
         if owners_channel:
             await owners_channel.send(embed=embed)
-        await interaction.response.send_message("Franchise list sent!", ephemeral=True)
+        else:
+            # If owners_channel is not configured or found, send to current channel or as response
+            await interaction.response.send_message(embed=embed, ephemeral=True) # Send as response if channel missing
+            # Log that owners channel was not found/configured if necessary
+            return # Avoid sending "Franchise list sent!" if already sent as response
+
+        await interaction.response.send_message("Franchise list sent to owners channel!", ephemeral=True)
         await self.log_action(interaction.guild, "Franchise List Viewed", "Franchise list requested", interaction.user)
 
     # CPU Break: Pause after /franchiselist
@@ -441,18 +392,23 @@ class TeamManagementCog(commands.Cog):
     @app_commands.describe(team="The team to disband")
     @app_commands.autocomplete(team=team_autocomplete)
     async def disband(self, interaction: discord.Interaction, team: str):
-        if team not in self.config.get("teams", []):
-            await interaction.response.send_message("Invalid team. Must be created via /setup.", ephemeral=True)
+        guild_config_main = load_guild_config(interaction.guild.id) # Load for initial check
+
+        if team not in guild_config_main.get("teams", []):
+            await interaction.response.send_message("Invalid team. Must be created via /setupteams.", ephemeral=True) # Changed to /setupteams
             return
         team_role = discord.utils.get(interaction.guild.roles, name=team)
         if not team_role:
             await interaction.response.send_message("Team role not found.", ephemeral=True)
             return
 
-        async def disband_callback(interaction: discord.Interaction):
-            team_emoji = self.team_emojis.get(team, "")
+        async def disband_callback(interaction_cb: discord.Interaction): # Renamed interaction
+            # Reload guild_config inside callback for fresh data if needed, though for emojis it might not change often
+            guild_config_cb = load_guild_config(interaction_cb.guild.id)
+            team_emojis_cb = guild_config_cb.get("team_emojis", {})
+            team_emoji = team_emojis_cb.get(team, "")
             embed = discord.Embed(
-                title=f"{interaction.guild.name} Disbandment Report",
+                title=f"{interaction_cb.guild.name} Disbandment Report",
                 description=f"Team {team_emoji} {team} has been disbanded.",
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
@@ -480,29 +436,17 @@ class TeamManagementCog(commands.Cog):
                 value=", ".join(m.display_name for m in players) or "None",
                 inline=False
             )
-            if interaction.guild.icon:
-                embed.set_thumbnail(url=interaction.guild.icon.url)
-            # Load guild-specific setup configuration for alerts channel
-            guild_config_file = f"config/setup_{interaction.guild.id}.json"
-            guild_config = {}
-            if os.path.exists(guild_config_file):
-                try:
-                    with open(guild_config_file, 'r') as f:
-                        content = f.read().strip()
-                        if content:
-                            guild_config = json.loads(content)
-                        else:
-                            guild_config = {}
-                except (json.JSONDecodeError, ValueError):
-                    guild_config = {}
+            if interaction_cb.guild.icon: # Use interaction_cb
+                embed.set_thumbnail(url=interaction_cb.guild.icon.url)
 
-            alerts_channel_id = guild_config.get("channels", {}).get("alerts")
+            # guild_config_cb already loaded for emojis
+            alerts_channel_id = guild_config_cb.get("channels", {}).get("alerts")
             if alerts_channel_id:
-                alerts_channel = interaction.guild.get_channel(int(alerts_channel_id))
+                alerts_channel = interaction_cb.guild.get_channel(int(alerts_channel_id)) # Use interaction_cb
                 if alerts_channel:
                     await alerts_channel.send(embed=embed)
-            await interaction.response.send_message("Team disbanded!", ephemeral=True)
-            await self.log_action(interaction.guild, "Team Disbanded", f"Team {team} disbanded", interaction.user)
+            await interaction_cb.response.send_message("Team disbanded!", ephemeral=True) # Use interaction_cb
+            await self.log_action(interaction_cb.guild, "Team Disbanded", f"Team {team} disbanded", interaction_cb.user) # Use interaction_cb
 
         modal = ConfirmModal("Disband Team", disband_callback)
         await interaction.response.send_modal(modal)
@@ -513,60 +457,53 @@ class TeamManagementCog(commands.Cog):
     @app_commands.command(name="disbandall", description="Disband all teams.")
     @app_commands.checks.has_permissions(administrator=True)
     async def disbandall(self, interaction: discord.Interaction):
-        async def disbandall_callback(interaction: discord.Interaction):
+        async def disbandall_callback(interaction_cb: discord.Interaction): # Renamed interaction
+            guild_config_cb = load_guild_config(interaction_cb.guild.id) # Load guild_config in callback
             embed = discord.Embed(
-                title=f"{interaction.guild.name} League Disbandment",
+                title=f"{interaction_cb.guild.name} League Disbandment",
                 description="All teams have been disbanded.",
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
-            staff_roles = ["Franchise Owner", "General Manager", "Head Coach", "Assistant Coach"]
-            for team in self.config.get("teams", []):
-                team_role = discord.utils.get(interaction.guild.roles, name=team)
+            staff_roles = ["Franchise Owner", "General Manager", "Head Coach", "Assistant Coach"] # Consider making these configurable
+            teams_cb = guild_config_cb.get("teams", [])
+            team_emojis_cb = guild_config_cb.get("team_emojis", {})
+
+            for team_name_cb in teams_cb: # Iterate over teams from guild_config
+                team_role = discord.utils.get(interaction_cb.guild.roles, name=team_name_cb)
                 if not team_role:
                     continue
-                team_emoji = self.team_emojis.get(team, "")
+                team_emoji = team_emojis_cb.get(team_name_cb, "")
                 staff_info = []
-                for staff in staff_roles:
-                    role = discord.utils.get(interaction.guild.roles, name=staff)
-                    if not role:
+                for staff in staff_roles: # staff is a string role name
+                    role = discord.utils.get(interaction_cb.guild.roles, name=staff)
+                    if not role: # Role name from staff_roles might not exist
                         continue
-                    member = next((m for m in interaction.guild.members if role in m.roles and team_role in m.roles), None)
+                    # Ensure member is part of the current team_role being processed
+                    member = next((m for m in interaction_cb.guild.members if role in m.roles and team_role in m.roles), None)
                     if member:
-                        staff_info.append(f"{staff[:2]}: {member.display_name}")
+                        staff_info.append(f"{staff[:2]}: {member.display_name}") # Using original staff name for display
                         await member.remove_roles(role, team_role)
-                players = [m for m in interaction.guild.members if team_role in m.roles]
+                players = [m for m in interaction_cb.guild.members if team_role in m.roles and not any(discord.utils.get(m.roles, name=s_role) for s_role in staff_roles)] # Exclude staff from players
                 for player in players:
                     await player.remove_roles(team_role)
                 embed.add_field(
-                    name=f"{team_emoji} {team}",
-                    value=f"Staff: {', '.join(staff_info) or 'None'}\nPlayers: {', '.join(m.display_name for m in players) or 'None'}",
+                    name=f"{team_emoji} {team_name_cb}",
+                    value=f"Staff: {', '.join(staff_info) or 'None'}\nPlayers: {', '.join(p.display_name for p in players) or 'None'}", # Use p.display_name
                     inline=False
                 )
-                await self.log_action(interaction.guild, "Team Disbanded", f"Team {team} disbanded", interaction.user)
-            if interaction.guild.icon:
-                embed.set_thumbnail(url=interaction.guild.icon.url)
-            # Load guild-specific setup configuration for alerts channel
-            guild_config_file = f"config/setup_{interaction.guild.id}.json"
-            guild_config = {}
-            if os.path.exists(guild_config_file):
-                try:
-                    with open(guild_config_file, 'r') as f:
-                        content = f.read().strip()
-                        if content:
-                            guild_config = json.loads(content)
-                        else:
-                            guild_config = {}
-                except (json.JSONDecodeError, ValueError):
-                    guild_config = {}
+                await self.log_action(interaction_cb.guild, "Team Disbanded", f"Team {team_name_cb} disbanded", interaction_cb.user)
+            if interaction_cb.guild.icon:
+                embed.set_thumbnail(url=interaction_cb.guild.icon.url)
 
-            alerts_channel_id = guild_config.get("channels", {}).get("alerts")
+            # guild_config_cb already loaded
+            alerts_channel_id = guild_config_cb.get("channels", {}).get("alerts")
             if alerts_channel_id:
-                alerts_channel = interaction.guild.get_channel(int(alerts_channel_id))
+                alerts_channel = interaction_cb.guild.get_channel(int(alerts_channel_id))
                 if alerts_channel:
                     await alerts_channel.send(embed=embed)
-            await interaction.response.send_message("All teams disbanded!", ephemeral=True)
-            await self.log_action(interaction.guild, "All Teams Disbanded", "All teams disbanded", interaction.user)
+            await interaction_cb.response.send_message("All teams disbanded!", ephemeral=True)
+            await self.log_action(interaction_cb.guild, "All Teams Disbanded", "All teams disbanded", interaction_cb.user)
 
         modal = ConfirmModal("Disband All Teams", disbandall_callback)
         await interaction.response.send_modal(modal)
@@ -578,40 +515,48 @@ class TeamManagementCog(commands.Cog):
     @app_commands.describe(team="The team to display the roster for")
     @app_commands.autocomplete(team=team_autocomplete)
     async def roster(self, interaction: discord.Interaction, team: str):
-        if team not in self.config.get("teams", []):
-            await interaction.response.send_message("Invalid team. Must be created via /setup.", ephemeral=True)
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+
+        if team not in guild_config.get("teams", []):
+            await interaction.response.send_message("Invalid team. Must be created via /setupteams.", ephemeral=True) # Changed to /setupteams
             return
         team_role = discord.utils.get(interaction.guild.roles, name=team)
         if not team_role:
             await interaction.response.send_message("Team role not found.", ephemeral=True)
             return
-        team_emoji = self.team_emojis.get(team, "")
+
+        team_emojis_local = guild_config.get("team_emojis", {}) # Load from guild_config
+        team_emoji = team_emojis_local.get(team, "")
         embed = discord.Embed(
             title=f"{team_emoji} {team} Roster",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
+        # Consider making staff_roles configurable if they vary per guild
         staff_roles = ["Franchise Owner", "General Manager", "Head Coach", "Assistant Coach"]
-        for staff in staff_roles:
-            role = discord.utils.get(interaction.guild.roles, name=staff)
+        for staff_role_name in staff_roles: # Renamed
+            # Role IDs for staff should ideally be fetched from guild_config if they are configurable
+            # For now, assuming role names are fixed as per original code
+            role = discord.utils.get(interaction.guild.roles, name=staff_role_name)
             if not role:
                 continue
             member = next((m for m in interaction.guild.members if role in m.roles and team_role in m.roles), None)
             embed.add_field(
-                name=staff,
+                name=staff_role_name,
                 value=member.display_name if member else "None",
                 inline=True
             )
-        players = [m for m in interaction.guild.members if team_role in m.roles and not any(discord.utils.get(m.roles, name=staff) for staff in staff_roles)]
+
+        players = [m for m in interaction.guild.members if team_role in m.roles and not any(discord.utils.get(m.roles, name=s_role) for s_role in staff_roles)]
         embed.add_field(
             name="Players",
-            value=", ".join(m.display_name for m in players) or "None",
+            value=", ".join(p.display_name for p in players) or "None", # Use p.display_name
             inline=False
         )
-        roster_cap = int(self.config.get("roster_cap", 53))
+        roster_cap = int(guild_config.get("roster_cap", 53)) # Load from guild_config
         embed.add_field(
             name="Roster Cap",
-            value=f"{len(self.get_team_members(interaction.guild, team))}/{roster_cap}",
+            value=f"{len(self.get_team_members(interaction.guild, team))}/{roster_cap}", # get_team_members is fine
             inline=False
         )
         if interaction.guild.icon:

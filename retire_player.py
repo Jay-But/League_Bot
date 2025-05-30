@@ -7,33 +7,31 @@ from datetime import datetime
 import pytz
 import asyncio
 
-CONFIG_FILE = "config/setup.json"
+# CONFIG_FILE, load_config, save_config removed
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 class RetirePlayerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
-        self.team_emojis = self.config.get("team_emojis", {})
+        # self.config and self.team_emojis removed
 
     def get_guild_config(self, guild_id):
-        """Load guild-specific configuration"""
-        config_file = f"config/setup_{guild_id}.json"
-        if os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                content = f.read().strip()
-                if content:
-                    return json.loads(content)
-        return {}
+        return load_guild_config(guild_id)
 
     def has_required_roles(self, interaction: discord.Interaction):
         """Check if user has any of the configured franchise management roles"""
@@ -70,13 +68,15 @@ class RetirePlayerCog(commands.Cog):
             )
             await logs_channel.send(embed=embed)
 
-    def get_team_info(self, member):
-        config = load_config()
+    def get_team_info(self, member: discord.Member): # Added type hint
+        guild_config = load_guild_config(member.guild.id) # Use new helper
+        team_emojis = guild_config.get("team_emojis", {})
+        teams = guild_config.get("teams", [])
         for role in member.roles:
-            if role.name in config.get("teams", []) and role.name != "@everyone":
-                emoji = config.get("team_emojis", {}).get(role.name, "")
+            if role.name in teams and role.name != "@everyone":
+                emoji = team_emojis.get(role.name, "")
                 return role, role.name, emoji
-        return None, None, ""
+        return None, None, "" # Consistent return
 
     # CPU Break
     # asyncio.sleep(2)
@@ -85,6 +85,7 @@ class RetirePlayerCog(commands.Cog):
     @app_commands.checks.has_any_role("Franchise Owner")
     @app_commands.describe(player="The player to retire", message="Optional retirement message")
     async def retire(self, interaction: discord.Interaction, player: discord.Member, message: str = None):
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
         team_role, team_name, team_emoji = self.get_team_info(interaction.user)
         if not team_role:
             await interaction.response.send_message("You are not part of a valid team.", ephemeral=True)
@@ -100,7 +101,7 @@ class RetirePlayerCog(commands.Cog):
             return
 
         hof_role = None
-        hof_id = self.config.get("hof_role_id")
+        hof_id = guild_config.get("hof_role_id") # Use guild_config
         if hof_id:
             hof_role = discord.utils.get(interaction.guild.roles, id=int(hof_id))
             if hof_role:
@@ -123,11 +124,8 @@ class RetirePlayerCog(commands.Cog):
             embed.set_thumbnail(url=interaction.guild.icon.url)
 
         await interaction.response.send_message(embed=embed)
-        logs_channel_id = self.config.get("logs")
-        if logs_channel_id:
-            logs_channel = interaction.guild.get_channel(int(logs_channel_id))
-            if logs_channel:
-                await logs_channel.send(embed=embed)
+
+        # log_action will fetch the logs_channel from guild_config
         await self.log_action(
             interaction.guild,
             "Player Retired",
@@ -135,7 +133,7 @@ class RetirePlayerCog(commands.Cog):
         )
 
         # Send to transactions channel from guild-specific setup
-        guild_config = self.get_guild_config(interaction.guild.id)
+        # guild_config already loaded
         transactions_channel_id = guild_config.get("channels", {}).get("transactions")
         if transactions_channel_id:
             transactions_channel = interaction.guild.get_channel(int(transactions_channel_id))

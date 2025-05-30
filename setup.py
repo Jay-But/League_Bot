@@ -133,7 +133,7 @@ class SetupCog(commands.Cog):
     def create_page_embed(self, page: int, total_pages: int, role_selections, channel_selections, settings, guild):
         if page == 1:
             embed = discord.Embed(
-                title="🏈 Hydda Setup",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: Franchise Roles**\nSelect roles for your league's franchise management.",
                 color=discord.Color.blue()
             )
@@ -149,7 +149,7 @@ class SetupCog(commands.Cog):
 
         elif page == 2:
             embed = discord.Embed(
-                title="🏈 Hydra Setup",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: Additional Roles**\nSelect additional roles for your league.",
                 color=discord.Color.blue()
             )
@@ -165,7 +165,7 @@ class SetupCog(commands.Cog):
 
         elif page == 3:
             embed = discord.Embed(
-                title="🏈 Hydra Setup",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: More Roles**\nSelect additional roles for your league.",
                 color=discord.Color.blue()
             )
@@ -181,7 +181,7 @@ class SetupCog(commands.Cog):
 
         elif page == 4:
             embed = discord.Embed(
-                title="🏈 League Setup Wizard",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: League Channels**\nSelect channels for your league.",
                 color=discord.Color.blue()
             )
@@ -197,7 +197,7 @@ class SetupCog(commands.Cog):
 
         elif page == 5:
             embed = discord.Embed(
-                title="🏈 League Setup Wizard",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: Additional Channels**\nSelect additional channels for your league.",
                 color=discord.Color.blue()
             )
@@ -213,7 +213,7 @@ class SetupCog(commands.Cog):
 
         elif page == 6:
             embed = discord.Embed(
-                title="🏈 League Setup Wizard",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: Schedule Channel**\nSelect the channel where game schedules will be posted.",
                 color=discord.Color.blue()
             )
@@ -227,9 +227,9 @@ class SetupCog(commands.Cog):
 
         elif page == 7:
             embed = discord.Embed(
-                title="🏈 League Configuration",
+                title="🏈 League Setup", # Standardized title
                 description=f"**Step {page}/{total_pages}: Final Settings**\nConfigure your league's core settings and policies.",
-                color=discord.Color.gold()
+                color=discord.Color.gold() # Keeping gold color for final page as per instructions
             )
 
             # Team Management Section

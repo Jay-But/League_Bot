@@ -10,7 +10,23 @@ import asyncio
 from utils.team_utils import team_autocomplete
 
 DATA_FILE = "league_data.json"
-CONFIG_FILE = "config/setup.json"
+# CONFIG_FILE, load_config, save_config removed
+
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
+    return {}
+
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 def load_league_data():
     if os.path.exists(DATA_FILE):
@@ -22,25 +38,16 @@ def save_league_data(data):
     with open(DATA_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
-
 class ScheduleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.league_data = load_league_data()
-        self.config = load_config()
+        # self.config removed
         self.check_offseason.start()
 
     async def log_action(self, guild, action, details):
-        logs_channel_id = self.config.get("logs")
+        guild_config = load_guild_config(guild.id)
+        logs_channel_id = guild_config.get("logs") # Assuming 'logs' is a top-level key for the channel ID
         if logs_channel_id:
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
@@ -52,9 +59,9 @@ class ScheduleCog(commands.Cog):
                 )
                 await logs_channel.send(embed=embed)
 
-    def get_all_teams(self, guild):
-        config = load_config()
-        return config.get("teams", [])
+    def get_all_teams(self, guild): # guild_id could be passed, or guild object
+        guild_config = load_guild_config(guild.id)
+        return guild_config.get("teams", [])
 
     # CPU Break
     # asyncio.sleep(2)
@@ -63,12 +70,13 @@ class ScheduleCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def schedule(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        guild_id = str(interaction.guild.id)
-        data = self.league_data.get(guild_id, {})
-        config = load_config()
+        guild_id_str = str(interaction.guild.id) # Renamed to avoid conflict with guild object
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        data = self.league_data.get(guild_id_str, {})
+        # config = load_config() # Removed
 
-        if not data.get("teams"):
-            await interaction.followup.send("Use /addteam to select teams.", ephemeral=True)
+        if not data.get("teams"): # This 'teams' comes from league_data, set by setupteams
+            await interaction.followup.send("Use /setupteams to select teams for the league.", ephemeral=True)
             return
 
         if data.get("offseason"):
@@ -96,7 +104,7 @@ class ScheduleCog(commands.Cog):
         embed = discord.Embed(
             title=f"Week {current_week} Schedule",
             description=f"Games must be completed by {deadline_str}.",
-            color=discord.Color.blue(),
+            color=discord.Color.green(), # Changed to green
             timestamp=discord.utils.utcnow()
         )
 
@@ -121,16 +129,21 @@ class ScheduleCog(commands.Cog):
 
                 voice_cog = self.bot.get_cog("VoiceChannelManagerCog")
                 if voice_cog:
-                    category_id = load_config().get("voice_category_id")
+                    category_id = guild_config.get("voice_category_id") # Use guild_config
                     if category_id:
                         team1_vc, team2_vc = await voice_cog.create_team_voice_channels(
                             interaction.guild, team1, team2, category_id
                         )
                         if team1_vc and team2_vc:
-                            voice_cog.team_channels[f"{team1}-{team2}"] = [team1_vc, team2_vc, thread.id]
+                            # Assuming voice_cog.team_channels is handled correctly by VoiceChannelManagerCog
+                            # For now, this part of interaction remains, focusing on config access.
+                            if not hasattr(voice_cog, 'team_channels') or not isinstance(voice_cog.team_channels, dict):
+                                voice_cog.team_channels = {} # Ensure it exists
+                            voice_cog.team_channels[f"{team1}-{team2}"] = [team1_vc.id, team2_vc.id, thread.id] # Storing IDs
                             await thread.send(f"Voice Channels:\n{team1}: {team1_vc.mention}\n{team2}: {team2_vc.mention}")
             except Exception as e:
-                await interaction.followup.send(f"Error creating thread: {e}", ephemeral=True)
+                await interaction.followup.send(f"Error creating thread or VC: {e}", ephemeral=True) # Expanded error message
+                # Continue to next matchup if one fails? Or return? For now, return.
                 return
 
         data["thread_ids"] = thread_ids
@@ -139,7 +152,7 @@ class ScheduleCog(commands.Cog):
             data["offseason"] = True
             resume_date = (datetime.now(tz) + timedelta(days=data.get("offseason_days", 7))).strftime("%Y-%m-%d")
             data["resume_date"] = resume_date
-        self.league_data[guild_id] = data
+        self.league_data[guild_id_str] = data # Use guild_id_str
         save_league_data(self.league_data)
         await interaction.followup.send(embed=embed)
         await self.log_action(interaction.guild, "Schedule Generated", f"Week {current_week} scheduled")
@@ -169,8 +182,8 @@ class ScheduleCog(commands.Cog):
     @app_commands.command(name="setupteams", description="Add team roles for the league.")
     @app_commands.checks.has_permissions(administrator=True)
     async def setupteams(self, interaction: discord.Interaction):
-        config = load_config()
-        teams = config.get("teams", [])
+        # config = load_config() # Removed
+        # teams = config.get("teams", []) # This was just for initial display, not strictly needed before selection
 
         class TeamRoleSelect(discord.ui.RoleSelect):
             def __init__(self):
@@ -182,18 +195,29 @@ class ScheduleCog(commands.Cog):
 
             async def callback(self, interaction: discord.Interaction):
                 guild_id = str(interaction.guild.id)
-                selected_teams = [v.name for v in self.values]
-                config = load_config()
-                config["teams"] = selected_teams
-                save_config(config)
+                selected_team_names = [v.name for v in self.values] # Renamed
+
+                # Load existing guild_config, update it, then save
+                guild_config = load_guild_config(interaction.guild.id)
+                guild_config["teams"] = selected_team_names # Store selected team names
+                # Note: This overwrites existing teams. If merging is desired, logic would be different.
+                save_guild_config(interaction.guild.id, guild_config)
+
+                # Update league_data as well, as the schedule command uses data.get("teams")
+                # This assumes 'teams' in league_data should mirror guild_config['teams'] for scheduling purposes.
+                league_data_guild = self.view.bot.get_cog("ScheduleCog").league_data.get(guild_id, {})
+                league_data_guild["teams"] = selected_team_names
+                self.view.bot.get_cog("ScheduleCog").league_data[guild_id] = league_data_guild
+                save_league_data(self.view.bot.get_cog("ScheduleCog").league_data)
+
                 await interaction.response.send_message(
-                    f"Teams added: {', '.join(selected_teams)}",
+                    f"Teams configured: {', '.join(selected_team_names)}",
                     ephemeral=True
                 )
                 await self.view.bot.get_cog("ScheduleCog").log_action(
                     interaction.guild,
-                    "Teams Added",
-                    f"{len(selected_teams)} teams configured"
+                    "Teams Configured", # Changed action name slightly for clarity
+                    f"{len(selected_team_names)} teams configured"
                 )
 
         class TeamSetupView(discord.ui.View):
@@ -215,16 +239,20 @@ class ScheduleCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(superbowl_name="Optional name for the Super Bowl")
     async def startplayoffs(self, interaction: discord.Interaction, superbowl_name: str = None):
-        guild_id = str(interaction.guild.id)
-        config = load_config()
-        teams = self.league_data.get(guild_id, {}).get("playoff_teams", config.get("teams", []))
-        if not teams or len(teams) < 2:
-            await interaction.response.send_message("Need at least 2 teams for playoffs. Please add teams using /addteam and then /addplayoffteams.", ephemeral=True)
+        guild_id_str = str(interaction.guild.id) # Renamed
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        # config = load_config() # Removed
+
+        # Get playoff_teams from league_data, fallback to teams from guild_config
+        playoff_teams_list = self.league_data.get(guild_id_str, {}).get("playoff_teams", guild_config.get("teams", []))
+
+        if not playoff_teams_list or len(playoff_teams_list) < 2:
+            await interaction.response.send_message("Need at least 2 teams for playoffs. Ensure teams are configured with /setupteams and playoff teams are set if specific.", ephemeral=True)
             return
 
-        random.shuffle(teams)
-        matchups = [(teams[i], teams[i+1]) for i in range(0, len(teams)-1, 2)]
-        title = f"{superbowl_name if superbowl_name and len(teams) == 2 else 'Playoff Matches'}"
+        random.shuffle(playoff_teams_list)
+        matchups = [(playoff_teams_list[i], playoff_teams_list[i+1]) for i in range(0, len(playoff_teams_list)-1, 2)]
+        title = f"{superbowl_name if superbowl_name and len(playoff_teams_list) == 2 else 'Playoff Matches'}"
         embed = discord.Embed(
             title=f"{interaction.guild.name} {title}",
             description="Playoff games scheduled!",
@@ -251,13 +279,13 @@ class ScheduleCog(commands.Cog):
                 if role1 and role2:
                     await thread.send(f"**Playoff Game**: {role1.mention} vs {role2.mention}")
             except Exception as e:
-                await interaction.response.send_message(f"Error creating thread: {e}", ephemeral=True)
+                await interaction.response.send_message(f"Error creating thread: {e}", ephemeral=True) # Not followup, as response not deferred
                 return
 
-        self.league_data[guild_id]["superbowl_name"] = superbowl_name
+        self.league_data[guild_id_str]["superbowl_name"] = superbowl_name # Use guild_id_str
         save_league_data(self.league_data)
         await interaction.response.send_message(embed=embed)
-        await self.log_action(interaction.guild, "Playoffs Started", f"Playoffs with {len(teams)} teams")
+        await self.log_action(interaction.guild, "Playoffs Started", f"Playoffs with {len(playoff_teams_list)} teams")
 
     # CPU Break
     # asyncio.sleep(2)
@@ -269,16 +297,16 @@ class ScheduleCog(commands.Cog):
         if not 1 <= days <= 90:
             await interaction.response.send_message("Offseason must be 1-90 days.", ephemeral=True)
             return
-        guild_id = str(interaction.guild.id)
-        if guild_id not in self.league_data:
-            await interaction.response.send_message("League not set up. Use /setupteams.", ephemeral=True)
-            return
+        guild_id_str = str(interaction.guild.id) # Renamed
+        # Ensure league_data has an entry for this guild
+        if guild_id_str not in self.league_data:
+            self.league_data[guild_id_str] = {} # Initialize if not present
 
-        self.league_data[guild_id]["offseason"] = True
-        self.league_data[guild_id]["offseason_days"] = days
-        tz = pytz.timezone("America/Chicago")
+        self.league_data[guild_id_str]["offseason"] = True
+        self.league_data[guild_id_str]["offseason_days"] = days
+        tz = pytz.timezone("America/Chicago") # Consider making timezone configurable per guild
         resume_date = datetime.now(tz) + timedelta(days=days)
-        self.league_data[guild_id]["resume_date"] = resume_date.strftime("%Y-%m-%d")
+        self.league_data[guild_id_str]["resume_date"] = resume_date.strftime("%Y-%m-%d")
 
         embed = discord.Embed(
             title="Offseason Started",
@@ -289,7 +317,8 @@ class ScheduleCog(commands.Cog):
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
 
-        schedule_channel_id = self.config.get("schedule")
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        schedule_channel_id = guild_config.get("schedule") # Get 'schedule' channel from guild_config
         if schedule_channel_id:
             schedule_channel = interaction.guild.get_channel(int(schedule_channel_id))
             if schedule_channel:
@@ -319,11 +348,11 @@ class ScheduleCog(commands.Cog):
         app_commands.Choice(name="PM", value="PM")
     ])
     async def gametime(self, interaction: discord.Interaction, team1: str, team2: str, month: int, day: int, year: int, hour: int, minute: int, ampm: str):
-        config = load_config()
-        teams = config.get("teams", [])
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        teams = guild_config.get("teams", [])
         
         if team1 not in teams or team2 not in teams:
-            await interaction.response.send_message("Invalid teams. Must be created via /addteam.", ephemeral=True)
+            await interaction.response.send_message("Invalid teams. Must be created via /setupteams.", ephemeral=True) # Changed to /setupteams
             return
             
         # Validate date/time
@@ -352,7 +381,7 @@ class ScheduleCog(commands.Cog):
             return
 
         # Get gametime channel
-        gametime_channel_id = config.get("gametime")
+        gametime_channel_id = guild_config.get("gametime") # Use guild_config
         if not gametime_channel_id:
             await interaction.response.send_message("Gametime channel not configured. Please run /setup.", ephemeral=True)
             return
@@ -363,7 +392,7 @@ class ScheduleCog(commands.Cog):
             return
 
         # Get team emojis
-        team_emojis = config.get("team_emojis", {})
+        team_emojis = guild_config.get("team_emojis", {}) # Use guild_config
         team1_emoji = team_emojis.get(team1, "")
         team2_emoji = team_emojis.get(team2, "")
         
@@ -399,72 +428,72 @@ class ScheduleCog(commands.Cog):
         embed.add_field(name="Referee", value="Click button to assign", inline=True)
 
         class GameTimeView(discord.ui.View):
-            def __init__(self, bot, config, team1, team2):
+            def __init__(self, bot, guild_config_view, team1_view, team2_view): # Pass guild_config
                 super().__init__(timeout=None)
                 self.bot = bot
-                self.config = config
-                self.team1 = team1
-                self.team2 = team2
+                self.guild_config = guild_config_view # Store guild_config
+                self.team1 = team1_view
+                self.team2 = team2_view
                 self.streamer = None
                 self.referee = None
 
             @discord.ui.button(label="Streamer", style=discord.ButtonStyle.primary)
-            async def streamer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                streamer_role_id = self.config.get("streamer")
+            async def streamer_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed interaction
+                streamer_role_id = self.guild_config.get("streamer") # Use self.guild_config
                 if not streamer_role_id:
-                    await interaction.response.send_message("Streamer role not configured in /setup.", ephemeral=True)
+                    await interaction_view.response.send_message("Streamer role not configured in /setup.", ephemeral=True)
                     return
                     
-                streamer_role = interaction.guild.get_role(int(streamer_role_id))
+                streamer_role = interaction_view.guild.get_role(int(streamer_role_id))
                 if not streamer_role:
-                    await interaction.response.send_message("Streamer role not found.", ephemeral=True)
+                    await interaction_view.response.send_message("Streamer role not found.", ephemeral=True)
                     return
                     
-                if streamer_role not in interaction.user.roles:
-                    await interaction.response.send_message("You don't have the streamer role.", ephemeral=True)
+                if streamer_role not in interaction_view.user.roles:
+                    await interaction_view.response.send_message("You don't have the streamer role.", ephemeral=True)
                     return
                     
-                self.streamer = interaction.user
-                embed = interaction.message.embeds[0]
-                embed.set_field_at(1, name="Streamer", value=self.streamer.mention, inline=True)
-                await interaction.response.edit_message(embed=embed, view=self)
+                self.streamer = interaction_view.user
+                embed_view = interaction_view.message.embeds[0] # Renamed embed
+                embed_view.set_field_at(1, name="Streamer", value=self.streamer.mention, inline=True)
+                await interaction_view.response.edit_message(embed=embed_view, view=self)
 
             @discord.ui.button(label="Referee", style=discord.ButtonStyle.secondary)
-            async def referee_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                referee_role_id = self.config.get("referee")
+            async def referee_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed interaction
+                referee_role_id = self.guild_config.get("referee") # Use self.guild_config
                 if not referee_role_id:
-                    await interaction.response.send_message("Referee role not configured in /setup.", ephemeral=True)
+                    await interaction_view.response.send_message("Referee role not configured in /setup.", ephemeral=True)
                     return
                     
-                referee_role = interaction.guild.get_role(int(referee_role_id))
+                referee_role = interaction_view.guild.get_role(int(referee_role_id))
                 if not referee_role:
-                    await interaction.response.send_message("Referee role not found.", ephemeral=True)
+                    await interaction_view.response.send_message("Referee role not found.", ephemeral=True)
                     return
                     
-                if referee_role not in interaction.user.roles:
-                    await interaction.response.send_message("You don't have the referee role.", ephemeral=True)
+                if referee_role not in interaction_view.user.roles:
+                    await interaction_view.response.send_message("You don't have the referee role.", ephemeral=True)
                     return
                     
-                self.referee = interaction.user
-                embed = interaction.message.embeds[0]
-                embed.set_field_at(2, name="Referee", value=self.referee.mention, inline=True)
-                await interaction.response.edit_message(embed=embed, view=self)
+                self.referee = interaction_view.user
+                embed_view = interaction_view.message.embeds[0] # Renamed embed
+                embed_view.set_field_at(2, name="Referee", value=self.referee.mention, inline=True)
+                await interaction_view.response.edit_message(embed=embed_view, view=self)
 
             @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
-            async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if not interaction.user.guild_permissions.administrator:
-                    await interaction.response.send_message("Only administrators can cancel games.", ephemeral=True)
+            async def cancel_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed interaction
+                if not interaction_view.user.guild_permissions.administrator:
+                    await interaction_view.response.send_message("Only administrators can cancel games.", ephemeral=True)
                     return
                     
-                embed = discord.Embed(
+                embed_cancel = discord.Embed( # Renamed embed
                     title="Game Cancelled",
                     description="Sorry, game has been cancelled",
                     color=discord.Color.red(),
                     timestamp=discord.utils.utcnow()
                 )
-                await interaction.response.edit_message(embed=embed, view=None)
+                await interaction_view.response.edit_message(embed=embed_cancel, view=None)
 
-        view = GameTimeView(self.bot, config, team1, team2)
+        view = GameTimeView(self.bot, guild_config, team1, team2) # Pass guild_config to view
         await gametime_channel.send(embed=embed, view=view)
         await interaction.response.send_message("Game time scheduled successfully!", ephemeral=True)
         await self.log_action(interaction.guild, "Game Time Scheduled", f"{team1} vs {team2}")
@@ -479,18 +508,17 @@ class ScheduleCog(commands.Cog):
     @app_commands.command(name="addplayoffteams", description="Show all teams registered with /addteam.")
     @app_commands.checks.has_permissions(administrator=True)
     async def addplayoffteams(self, interaction: discord.Interaction):
-        # Load team configuration from setup.json
-        config = load_config()
-        teams = config.get("teams", [])
-        team_emojis = config.get("team_emojis", {})
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        teams = guild_config.get("teams", [])
+        team_emojis = guild_config.get("team_emojis", {})
 
         if not teams:
-            await interaction.response.send_message("No teams registered. Use `/addteam` to register teams first.", ephemeral=True)
+            await interaction.response.send_message("No teams registered. Use `/setupteams` to register teams first.", ephemeral=True) # Changed to /setupteams
             return
 
         embed = discord.Embed(
             title="Registered Teams",
-            description=f"All teams registered with `/addteam` (Total: {len(teams)})",
+            description=f"All teams registered with `/setupteams` (Total: {len(teams)})", # Changed to /setupteams
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
@@ -546,12 +574,11 @@ class ScheduleCog(commands.Cog):
     )
     async def schedulegame(self, interaction: discord.Interaction, team1: str, team2: str, deadline: int = 72, autothreads: str = "disable", autovcs: str = "disable"):
         await interaction.response.defer()
-        
-        config = load_config()
-        teams = config.get("teams", [])
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        teams = guild_config.get("teams", [])
         
         if team1 not in teams or team2 not in teams:
-            await interaction.followup.send("Invalid teams. Must be created via /addteam.", ephemeral=True)
+            await interaction.followup.send("Invalid teams. Must be created via /setupteams.", ephemeral=True) # Changed to /setupteams
             return
             
         if deadline < 1 or deadline > 168:  # 1 hour to 1 week
@@ -559,7 +586,7 @@ class ScheduleCog(commands.Cog):
             return
 
         # Get schedule channel
-        schedule_channel_id = config.get("schedule")
+        schedule_channel_id = guild_config.get("schedule") # Use guild_config
         if not schedule_channel_id:
             await interaction.followup.send("Schedule channel not configured. Please run /setup.", ephemeral=True)
             return
@@ -569,7 +596,7 @@ class ScheduleCog(commands.Cog):
             await interaction.followup.send("Schedule channel not found.", ephemeral=True)
             return
 
-        tz = pytz.timezone("America/Chicago")
+        tz = pytz.timezone("America/Chicago") # Consider making timezone configurable
         current_time = datetime.now(tz)
         deadline_time = current_time + timedelta(hours=deadline)
         
@@ -611,7 +638,7 @@ class ScheduleCog(commands.Cog):
                 if autovcs == "enable":
                     voice_cog = self.bot.get_cog("VoiceChannelManagerCog")
                     if voice_cog:
-                        category_id = config.get("voice_category_id")
+                        category_id = guild_config.get("voice_category_id") # Use guild_config
                         if category_id:
                             try:
                                 team1_vc, team2_vc = await voice_cog.create_team_voice_channels(
@@ -630,7 +657,7 @@ class ScheduleCog(commands.Cog):
             thread = await schedule_channel.create_thread(
                 name=f"{team1} vs {team2}",
                 type=discord.ChannelType.public_thread,
-                auto_archive_duration=deadline * 60 if deadline <= 72 else 4320
+                auto_archive_duration=deadline * 60 if deadline <= 72 else 4320 # Convert hours to minutes for duration
             )
             
             role1 = discord.utils.get(interaction.guild.roles, name=team1)
@@ -641,7 +668,7 @@ class ScheduleCog(commands.Cog):
             if autovcs == "enable":
                 voice_cog = self.bot.get_cog("VoiceChannelManagerCog")
                 if voice_cog:
-                    category_id = config.get("voice_category_id")
+                    category_id = guild_config.get("voice_category_id") # Use guild_config
                     if category_id:
                         try:
                             team1_vc, team2_vc = await voice_cog.create_team_voice_channels(

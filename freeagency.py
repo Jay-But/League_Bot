@@ -8,13 +8,7 @@ from datetime import datetime
 import pytz
 import asyncio
 
-CONFIG_FILE = "config/setup.json"
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+# CONFIG_FILE and load_config() removed as per refactoring plan
 
 def load_guild_config(guild_id):
     """Load guild-specific configuration"""
@@ -36,8 +30,8 @@ def save_guild_config(guild_id, config):
 class FreeAgencyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
-        self.team_emojis = self.config.get("team_emojis", {})
+        # self.config and self.team_emojis are no longer initialized globally.
+        # Methods should use self.get_guild_config(guild_id) to load config as needed.
 
     def get_guild_config(self, guild_id):
         """Load guild-specific configuration from setup"""

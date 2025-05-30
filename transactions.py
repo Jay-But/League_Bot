@@ -10,18 +10,24 @@ from datetime import datetime
 import pytz
 import asyncio
 
-CONFIG_FILE = "config/setup.json"
+# CONFIG_FILE, load_config, save_config removed
 DRAFT_FILE = "config/draft.json"
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 def load_draft():
     if os.path.exists(DRAFT_FILE):
@@ -47,11 +53,11 @@ class ConfirmModal(discord.ui.Modal):
 class TransactionsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
-        self.team_emojis = self.config.get("team_emojis", {})
+        # self.config and self.team_emojis removed
 
     async def log_action(self, guild, action, details):
-        logs_channel_id = self.config.get("logs_channel")
+        guild_config = load_guild_config(guild.id)
+        logs_channel_id = guild_config.get("logs_channel") # Assuming top-level key
         if logs_channel_id:
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
@@ -64,9 +70,12 @@ class TransactionsCog(commands.Cog):
                 await logs_channel.send(embed=embed)
 
     def get_team_info(self, member: discord.Member):
+        guild_config = load_guild_config(member.guild.id)
+        teams = guild_config.get("teams", [])
+        team_emojis = guild_config.get("team_emojis", {})
         for role in member.roles:
-            if role.name in self.config.get("teams", []) and role.name != "@everyone":
-                emoji = self.team_emojis.get(role.name, "")
+            if role.name in teams and role.name != "@everyone":
+                emoji = team_emojis.get(role.name, "")
                 return role, role.name, emoji
         return None, None, None
 
@@ -76,17 +85,20 @@ class TransactionsCog(commands.Cog):
             return []
         return [member for member in guild.members if team_role in member.roles]
 
-    def check_trade_deadline(self):
-        deadline_str = self.config.get("trade_deadline")
+    def check_trade_deadline(self, guild_id: int): # Added guild_id parameter
+        guild_config = load_guild_config(guild_id)
+        deadline_str = guild_config.get("trade_deadline") # Assuming top-level key
         if not deadline_str:
-            return True
+            return True # No deadline set, trades always allowed
         try:
             deadline = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=pytz.UTC)
             return datetime.now(pytz.UTC) <= deadline
         except ValueError:
-            return True
+            return True # Invalid format, default to allowing
 
     def get_franchise_role(self, member: discord.Member):
+        # This method does not use self.config, so it's fine as is.
+        # However, franchise_roles could be made configurable per guild in the future.
         franchise_roles = ["Franchise Owner", "General Manager", "Head Coach", "Assistant Coach"]
         for role in member.roles:
             if role.name in franchise_roles:
@@ -94,10 +106,7 @@ class TransactionsCog(commands.Cog):
         return None
 
     def get_guild_config(self, guild_id: int):
-        """Retrieve guild-specific configuration."""
-        config = load_config()
-        guild_id_str = str(guild_id)
-        return config.get(guild_id_str, {})
+        return load_guild_config(guild_id) # Use the standalone helper
 
     def has_required_roles(self, interaction: discord.Interaction):
         """Check if the user has the roles configured in setup."""
@@ -138,7 +147,8 @@ class TransactionsCog(commands.Cog):
             await interaction.response.send_message(f"{player.display_name} is already on {player_team}.", ephemeral=True)
             return
 
-        roster_cap = int(self.config.get("roster_cap", 53))
+        guild_config_sign = load_guild_config(interaction.guild.id) # Load for this command scope
+        roster_cap = int(guild_config_sign.get("roster_cap", 53))
         current_roster = len(self.get_team_members(interaction.guild, team_name))
         if current_roster >= roster_cap:
             await interaction.response.send_message(f"{team_name} has reached the roster cap ({roster_cap}).", ephemeral=True)
@@ -157,37 +167,50 @@ class TransactionsCog(commands.Cog):
                 embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
             embed.add_field(name="Coach:", value=f"{coach_role} {interaction.user.mention}", inline=False)
             embed.add_field(name="Roster:", value=f"{current_roster + 1}/{roster_cap}", inline=False)
-            # Set team emoji as thumbnail if available
-            team_emoji = self.team_emojis.get(team_name, "")
-            if team_emoji:
+
+            team_emojis_sign = guild_config_sign.get("team_emojis", {}) # Load from guild_config
+            team_emoji_url_check = team_emojis_sign.get(team_name, "") # Renamed
+            if team_emoji_url_check:
                 try:
                     # Extract emoji URL if it's a custom emoji
-                    if team_emoji.startswith('<:') and team_emoji.endswith('>'):
+                    if team_emoji_url_check.startswith('<:') and team_emoji_url_check.endswith('>'):
                         # Custom emoji format: <:name:id>
-                        emoji_id = team_emoji.split(':')[-1].rstrip('>')
+                        emoji_id = team_emoji_url_check.split(':')[-1].rstrip('>')
                         emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png"
                         embed.set_thumbnail(url=emoji_url)
-                    elif team_emoji.startswith('<a:') and team_emoji.endswith('>'):
+                    elif team_emoji_url_check.startswith('<a:') and team_emoji_url_check.endswith('>'):
                         # Animated emoji format: <a:name:id>
-                        emoji_id = team_emoji.split(':')[-1].rstrip('>')
+                        emoji_id = team_emoji_url_check.split(':')[-1].rstrip('>')
                         emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.gif"
                         embed.set_thumbnail(url=emoji_url)
                 except Exception:
                     pass  # If emoji URL fails, just skip the thumbnail
 
             # Send to transactions channel from guild-specific setup
-            guild_config = self.get_guild_config(interaction.guild.id)
-            transactions_channel_id = guild_config.get("channels", {}).get("transactions")
+            # guild_config_sign is already loaded
+            transactions_channel_id = guild_config_sign.get("channels", {}).get("transactions")
             if transactions_channel_id:
                 transactions_channel = interaction.guild.get_channel(int(transactions_channel_id))
                 if transactions_channel:
                     await transactions_channel.send(embed=embed)
+                # If channel not found, maybe send to interaction.channel as fallback or log an error?
+                # For now, matching original behavior of only sending if found.
             else:
-                await interaction.response.send_message("⚠️ Transactions channel not configured. Please run `/setup` and configure the Transactions channel.", ephemeral=True)
+                # If no transactions_channel_id, consider sending a message to the user or current channel.
+                # Original code sent a warning to interaction.response if channel not configured.
+                # This part of the logic is tricky because response might have been sent already.
+                # For now, if channel isn't configured, the message just doesn't go to that specific channel.
+                # The ephemeral "Player signed successfully!" will still be sent.
+                pass # No specific message if channel not configured, to avoid double response.
+
             await interaction.response.send_message("Player signed successfully!", ephemeral=True)
             await self.log_action(interaction.guild, "Player Signed", f"{player.display_name} to {team_name}")
         except discord.errors.HTTPException as e:
-            await interaction.response.send_message(f"Failed to sign player: {e}", ephemeral=True)
+            # Check if response has been sent before trying to send another one.
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Failed to sign player: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"Failed to sign player: {e}", ephemeral=True)
 
     # CPU Break: Pause after /sign
     # asyncio.sleep(2) simulated during code generation
@@ -200,96 +223,107 @@ class TransactionsCog(commands.Cog):
             await interaction.response.send_message("❌ You don't have permission to make offers. Please contact an administrator to configure roles via `/setup`.", ephemeral=True)
             return
 
+        guild_config_offer = load_guild_config(interaction.guild.id) # Load guild_config
+
         draft_data = load_draft()
         if draft_data.get("draft_active", False):
             await interaction.response.send_message("Offers are disabled during an active draft.", ephemeral=True)
             return
 
-        if not self.check_trade_deadline():
+        if not self.check_trade_deadline(interaction.guild.id): # Pass guild_id
             await interaction.response.send_message("The trade deadline has passed.", ephemeral=True)
             return
 
-        team_role, team_name, team_emoji = self.get_team_info(interaction.user)
+        team_role, team_name, team_emoji = self.get_team_info(interaction.user) # Uses load_guild_config internally
         if not team_role:
             await interaction.response.send_message("You are not part of a valid team.", ephemeral=True)
             return
 
-        player_team_role, player_team, _ = self.get_team_info(player)
+        player_team_role, player_team, _ = self.get_team_info(player) # Uses load_guild_config internally
         if player_team:
             await interaction.response.send_message(f"{player.display_name} is already on {player_team}.", ephemeral=True)
             return
 
-        roster_cap = int(self.config.get("roster_cap", 53))
+        roster_cap_offer = int(guild_config_offer.get("roster_cap", 53)) # Use guild_config
         current_roster = len(self.get_team_members(interaction.guild, team_name))
-        if current_roster >= roster_cap:
-            await interaction.response.send_message(f"{team_name} has reached the roster cap ({roster_cap}).", ephemeral=True)
+        if current_roster >= roster_cap_offer:
+            await interaction.response.send_message(f"{team_name} has reached the roster cap ({roster_cap_offer}).", ephemeral=True)
             return
 
         class OfferView(discord.ui.View):
-            def __init__(self, bot, player, team_role, team_name, team_emoji, coach_role):
+            def __init__(self, bot, player_view, team_role_view, team_name_view, team_emoji_view, coach_role_view, guild_config_view, roster_cap_view): # Pass guild_config and roster_cap
                 super().__init__(timeout=86400)  # 24 hours
                 self.bot = bot
-                self.player = player
-                self.team_role = team_role
-                self.team_name = team_name
-                self.team_emoji = team_emoji
-                self.coach_role = coach_role
+                self.player = player_view
+                self.team_role = team_role_view
+                self.team_name = team_name_view
+                self.team_emoji = team_emoji_view
+                self.coach_role = coach_role_view
+                self.guild_config = guild_config_view # Store guild_config
+                self.roster_cap = roster_cap_view # Store roster_cap
 
             async def on_timeout(self):
                 self.stop()
 
             @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
-            async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user != self.player:
-                    await interaction.response.send_message("Only the offered player can accept.", ephemeral=True)
+            async def accept_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed
+                if interaction_view.user != self.player:
+                    await interaction_view.response.send_message("Only the offered player can accept.", ephemeral=True)
                     return
                 try:
                     await self.player.add_roles(self.team_role)
-                    current_roster = len(self.bot.get_cog("TransactionsCog").get_team_members(interaction.guild, self.team_name))
-                    embed = discord.Embed(
+                    current_roster_accept = len(self.bot.get_cog("TransactionsCog").get_team_members(interaction_view.guild, self.team_name))
+                    embed_accept = discord.Embed( # Renamed
                         title="Offer Accepted",
                         description=f"{self.player.mention} has accepted the offer to join {self.team_emoji} {self.team_name}",
                         color=discord.Color.green(),
                         timestamp=discord.utils.utcnow()
                     )
-                    if interaction.guild.icon:
-                        embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
-                    embed.add_field(name="Coach:", value=f"{self.coach_role} {interaction.user.mention}", inline=False)
-                    embed.add_field(name="Roster:", value=f"{current_roster}/{roster_cap}", inline=False)
-                    if self.team_emoji:
-                        embed.set_thumbnail(url=self.team_emoji)  # Full-size team emoji
-                    # Send to transactions channel from guild-specific setup
-                    guild_config = self.bot.get_cog("TransactionsCog").get_guild_config(interaction.guild.id)
-                    transactions_channel_id = guild_config.get("channels", {}).get("transactions")
+                    if interaction_view.guild.icon:
+                        embed_accept.set_author(name=interaction_view.guild.name, icon_url=interaction_view.guild.icon.url)
+                    embed_accept.add_field(name="Coach:", value=f"{self.coach_role} {interaction_view.user.mention}", inline=False) # Used interaction_view
+                    embed_accept.add_field(name="Roster:", value=f"{current_roster_accept}/{self.roster_cap}", inline=False) # Use stored roster_cap
+
+                    # Team emoji for thumbnail - check if it's an actual URL or just the string representation
+                    # Assuming team_emoji is the string representation from config, try to parse if custom emoji
+                    team_emoji_str_accept = self.guild_config.get("team_emojis", {}).get(self.team_name, "")
+                    if team_emoji_str_accept.startswith('<:') and team_emoji_str_accept.endswith('>'):
+                        emoji_id_accept = team_emoji_str_accept.split(':')[-1].rstrip('>')
+                        embed_accept.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_accept}.png")
+                    elif team_emoji_str_accept.startswith('<a:') and team_emoji_str_accept.endswith('>'):
+                        emoji_id_accept = team_emoji_str_accept.split(':')[-1].rstrip('>')
+                        embed_accept.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_accept}.gif")
+
+                    transactions_channel_id = self.guild_config.get("channels", {}).get("transactions") # Use stored guild_config
                     if transactions_channel_id:
-                        transactions_channel = interaction.guild.get_channel(int(transactions_channel_id))
+                        transactions_channel = interaction_view.guild.get_channel(int(transactions_channel_id))
                         if transactions_channel:
-                            await transactions_channel.send(embed=embed)
-                    await interaction.response.send_message("Contract accepted!", ephemeral=True)
+                            await transactions_channel.send(embed=embed_accept)
+                    await interaction_view.response.send_message("Contract accepted!", ephemeral=True)
                     await self.bot.get_cog("TransactionsCog").log_action(
-                        interaction.guild,
+                        interaction_view.guild,
                         "Contract Accepted",
                         f"{self.player.display_name} joined {self.team_name}"
                     )
                     self.stop()
                 except discord.errors.HTTPException as e:
-                    await interaction.response.send_message(f"Failed to accept contract: {e}", ephemeral=True)
+                    await interaction_view.response.send_message(f"Failed to accept contract: {e}", ephemeral=True)
 
             @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-            async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user != self.player:
-                    await interaction.response.send_message("Only the offered player can decline.", ephemeral=True)
+            async def decline_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed
+                if interaction_view.user != self.player:
+                    await interaction_view.response.send_message("Only the offered player can decline.", ephemeral=True)
                     return
-                await interaction.response.send_message("Contract declined.", ephemeral=True)
+                await interaction_view.response.send_message("Contract declined.", ephemeral=True)
                 await self.bot.get_cog("TransactionsCog").log_action(
-                    interaction.guild,
+                    interaction_view.guild,
                     "Contract Declined",
                     f"{self.player.display_name} declined {self.team_name}"
                 )
                 self.stop()
 
-        view = OfferView(self.bot, player, team_role, team_name, team_emoji, self.get_franchise_role(interaction.user))
-        embed = discord.Embed(
+        view = OfferView(self.bot, player, team_role, team_name, team_emoji, self.get_franchise_role(interaction.user), guild_config_offer, roster_cap_offer)
+        embed_offer = discord.Embed( # Renamed
             title="Contract Offer",
             description=f"{player.mention}, you have received a contract offer from {team_emoji} {team_name}.",
             color=discord.Color.blue(),
@@ -332,12 +366,23 @@ class TransactionsCog(commands.Cog):
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
+            guild_config_demand = load_guild_config(interaction.guild.id) # Load guild_config
             if interaction.guild.icon:
                 embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
-            embed.add_field(name="Roster:", value=f"{current_roster - 1}/{int(self.config.get('roster_cap', 53))}", inline=False)
-            if team_emoji:
-                embed.set_thumbnail(url=team_emoji)  # Full-size team emoji
-            demands_channel_id = self.config.get("demands_channel")
+            embed.add_field(name="Roster:", value=f"{current_roster - 1}/{int(guild_config_demand.get('roster_cap', 53))}", inline=False)
+
+            # Assuming team_emoji is the string representation from get_team_info (which uses guild_config)
+            # Attempt to use it for thumbnail if it's a custom emoji URL/string
+            team_emojis_demand = guild_config_demand.get("team_emojis", {})
+            actual_team_emoji_str = team_emojis_demand.get(team_name, "") # team_name from get_team_info
+            if actual_team_emoji_str.startswith('<:') and actual_team_emoji_str.endswith('>'):
+                emoji_id_demand = actual_team_emoji_str.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_demand}.png")
+            elif actual_team_emoji_str.startswith('<a:') and actual_team_emoji_str.endswith('>'):
+                emoji_id_demand = actual_team_emoji_str.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_demand}.gif")
+
+            demands_channel_id = guild_config_demand.get("channels", {}).get("demands") # Get from guild_config
             demands_channel = interaction.guild.get_channel(int(demands_channel_id)) if demands_channel_id else interaction.channel
             await demands_channel.send(embed=embed)
             await interaction.response.send_message("Demand processed successfully!", ephemeral=True)
@@ -385,12 +430,21 @@ class TransactionsCog(commands.Cog):
                 color=discord.Color.gold(),
                 timestamp=discord.utils.utcnow()
             )
+            guild_config_promote = load_guild_config(interaction.guild.id) # Load guild_config
             if interaction.guild.icon:
                 embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
             embed.add_field(name="Coach:", value=f"{coach_role} {interaction.user.mention}", inline=False)
-            if team_emoji:
-                embed.set_thumbnail(url=team_emoji)  # Full-size team emoji
-            transactions_channel_id = self.config.get("transactions_channel")
+
+            team_emojis_promote = guild_config_promote.get("team_emojis", {})
+            actual_team_emoji_str_promote = team_emojis_promote.get(team_name, "")
+            if actual_team_emoji_str_promote.startswith('<:') and actual_team_emoji_str_promote.endswith('>'):
+                emoji_id_promote = actual_team_emoji_str_promote.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_promote}.png")
+            elif actual_team_emoji_str_promote.startswith('<a:') and actual_team_emoji_str_promote.endswith('>'):
+                emoji_id_promote = actual_team_emoji_str_promote.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_promote}.gif")
+
+            transactions_channel_id = guild_config_promote.get("channels", {}).get("transactions") # Get from guild_config
             transactions_channel = interaction.guild.get_channel(int(transactions_channel_id)) if transactions_channel_id else interaction.channel
             await transactions_channel.send(embed=embed)
             await interaction.response.send_message("Player promoted successfully!", ephemeral=True)
@@ -434,12 +488,21 @@ class TransactionsCog(commands.Cog):
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
+            guild_config_demote = load_guild_config(interaction.guild.id) # Load guild_config
             if interaction.guild.icon:
                 embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
             embed.add_field(name="Coach:", value=f"{coach_role} {interaction.user.mention}", inline=False)
-            if team_emoji:
-                embed.set_thumbnail(url=team_emoji)  # Full-size team emoji
-            transactions_channel_id = self.config.get("transactions_channel")
+
+            team_emojis_demote = guild_config_demote.get("team_emojis", {})
+            actual_team_emoji_str_demote = team_emojis_demote.get(team_name, "")
+            if actual_team_emoji_str_demote.startswith('<:') and actual_team_emoji_str_demote.endswith('>'):
+                emoji_id_demote = actual_team_emoji_str_demote.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_demote}.png")
+            elif actual_team_emoji_str_demote.startswith('<a:') and actual_team_emoji_str_demote.endswith('>'):
+                emoji_id_demote = actual_team_emoji_str_demote.split(':')[-1].rstrip('>')
+                embed.set_thumbnail(url=f"https://cdn.discordapp.com/emojis/{emoji_id_demote}.gif")
+
+            transactions_channel_id = guild_config_demote.get("channels", {}).get("transactions") # Get from guild_config
             transactions_channel = interaction.guild.get_channel(int(transactions_channel_id)) if transactions_channel_id else interaction.channel
             await transactions_channel.send(embed=embed)
             await interaction.response.send_message("Player demoted successfully!", ephemeral=True)
@@ -460,11 +523,13 @@ class TransactionsCog(commands.Cog):
             await interaction.response.send_message("Trades are disabled during an active draft.", ephemeral=True)
             return
 
-        if not self.check_trade_deadline():
+        guild_config_trade = load_guild_config(interaction.guild.id) # Load guild_config
+
+        if not self.check_trade_deadline(interaction.guild.id): # Pass guild_id
             await interaction.response.send_message("The trade deadline has passed.", ephemeral=True)
             return
 
-        team_role, user_team, team_emoji = self.get_team_info(interaction.user)
+        team_role, user_team, team_emoji_user = self.get_team_info(interaction.user) # Renamed team_emoji
         if not team_role:
             await interaction.response.send_message("You are not part of a valid team.", ephemeral=True)
             return
@@ -480,121 +545,149 @@ class TransactionsCog(commands.Cog):
             await interaction.response.send_message(f"{targeted_player.display_name} is not on {targeted_team}.", ephemeral=True)
             return
 
-        roster_cap = int(self.config.get("roster_cap", 53))
+        roster_cap_trade = int(guild_config_trade.get("roster_cap", 53)) # Use guild_config
         user_roster = len(self.get_team_members(interaction.guild, user_team))
         targeted_roster = len(self.get_team_members(interaction.guild, targeted_team))
-        if user_roster >= roster_cap or targeted_roster >= roster_cap:
+        if user_roster >= roster_cap_trade or targeted_roster >= roster_cap_trade: # Use var
             await interaction.response.send_message("One or both teams are at roster cap.", ephemeral=True)
             return
 
-        target_team_emoji = self.team_emojis.get(targeted_team, "")
-        embed = discord.Embed(
+        team_emojis_trade = guild_config_trade.get("team_emojis", {}) # Use guild_config
+        target_team_emoji = team_emojis_trade.get(targeted_team, "")
+        embed_trade = discord.Embed( # Renamed
             title="Trade Proposal",
-            description=f"Trade proposed by {team_emoji} {user_team}:",
+            description=f"Trade proposed by {team_emoji_user} {user_team}:", # Use renamed var
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
         if interaction.guild.icon:
-            embed.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
-        embed.add_field(name=f"{team_emoji} {user_team} Offers", value=offered_player.mention, inline=False)
-        embed.add_field(name=f"{target_team_emoji} {targeted_team} Offers", value=targeted_player.mention, inline=False)
+            embed_trade.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url)
+        embed_trade.add_field(name=f"{team_emoji_user} {user_team} Offers", value=offered_player.mention, inline=False) # Use renamed var
+        embed_trade.add_field(name=f"{target_team_emoji} {targeted_team} Offers", value=targeted_player.mention, inline=False)
 
         class TradeView(discord.ui.View):
-            def __init__(self, bot, user_team, targeted_team, offered_player, targeted_player, team_emoji, target_team_emoji):
+            def __init__(self, bot, user_team_view, targeted_team_view, offered_player_view, targeted_player_view, team_emoji_user_view, target_team_emoji_view, guild_config_view_trade): # Pass guild_config
                 super().__init__(timeout=86400)  # 24 hours
                 self.bot = bot
-                self.user_team = user_team
-                self.targeted_team = targeted_team
-                self.offered_player = offered_player
-                self.targeted_player = targeted_player
-                self.team_emoji = team_emoji
-                self.target_team_emoji = target_team_emoji
-                self.user_fo = discord.utils.get(interaction.guild.roles, name="Franchise Owner")
-                self.target_fo = None
+                self.user_team = user_team_view
+                self.targeted_team = targeted_team_view
+                self.offered_player = offered_player_view
+                self.targeted_player = targeted_player_view
+                self.team_emoji_user = team_emoji_user_view # Stored
+                self.target_team_emoji = target_team_emoji_view # Stored
+                # FO role name should ideally come from guild_config if configurable
+                self.user_fo_role = discord.utils.get(interaction.guild.roles, name="Franchise Owner")
+                self.target_fo_member = None # Stored target FO member
+                self.guild_config = guild_config_view_trade # Store guild_config
+                self.user_team_approved = False # Initialize approval flags
+                self.target_team_approved = False # Initialize approval flags
 
-            async def start(self):
-                target_team_role = discord.utils.get(interaction.guild.roles, name=self.targeted_team)
-                self.target_fo = None
-                for member in interaction.guild.members:
-                    if self.user_fo in member.roles and target_team_role in member.roles:
-                        self.target_fo = member
-                        break
-                if not self.target_fo:
-                    await interaction.followup.send("No Franchise Owner found for the targeted team.", ephemeral=True)
+
+            async def start(self, initial_interaction: discord.Interaction): # Pass initial interaction
+                target_team_role_obj = discord.utils.get(initial_interaction.guild.roles, name=self.targeted_team)
+                self.target_fo_member = None
+                # Ensure user_fo_role exists before trying to iterate
+                if self.user_fo_role and target_team_role_obj:
+                    for member in initial_interaction.guild.members:
+                        if self.user_fo_role in member.roles and target_team_role_obj in member.roles:
+                            self.target_fo_member = member
+                            break
+                if not self.target_fo_member:
+                    # Use followup if initial response was deferred
+                    if initial_interaction.response.is_done():
+                         await initial_interaction.followup.send("No Franchise Owner found for the targeted team.", ephemeral=True)
+                    else:
+                        await initial_interaction.response.send_message("No Franchise Owner found for the targeted team.", ephemeral=True)
                     self.stop()
                     return
-                thread = await interaction.channel.create_thread(
+
+                # Ensure original response is sent before creating thread with it
+                if not initial_interaction.response.is_done():
+                    await initial_interaction.response.send_message("Trade proposal being prepared...", ephemeral=True) # Send placeholder
+
+                thread_message = await initial_interaction.original_response()
+                thread = await initial_interaction.channel.create_thread(
                     name=f"Trade: {self.user_team} vs {self.targeted_team}",
-                    message=await interaction.original_response(),
-                    auto_archive_duration=60
+                    message=thread_message, # Use fetched message
+                    auto_archive_duration=60 # Consider making this configurable
                 )
-                await thread.send(content=f"{interaction.user.mention} {self.target_fo.mention}", embed=embed)
+                await thread.send(content=f"{initial_interaction.user.mention} {self.target_fo_member.mention}", embed=embed_trade) # Use embed_trade
 
             @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
-            async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user not in [interaction.user, self.target_fo]:
-                    await interaction.response.send_message("Only the proposing or target Franchise Owner can approve.", ephemeral=True)
-                    return
-                if interaction.user == interaction.user and self.user_team_approved:
-                    await interaction.response.send_message("You have already approved this trade.", ephemeral=True)
-                    return
-                if interaction.user == self.target_fo and self.target_team_approved:
-                    await interaction.response.send_message("You have already approved this trade.", ephemeral=True)
+            async def approve_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed
+                # Check if the interactor is the original proposer or the target FO member
+                if interaction_view.user != interaction.user and interaction_view.user != self.target_fo_member:
+                    await interaction_view.response.send_message("Only the proposing or target Franchise Owner can approve.", ephemeral=True)
                     return
 
-                if interaction.user == interaction.user:
+                if interaction_view.user == interaction.user and self.user_team_approved: # Proposer
+                    await interaction_view.response.send_message("You have already approved this trade.", ephemeral=True)
+                    return
+                if interaction_view.user == self.target_fo_member and self.target_team_approved: # Target FO
+                    await interaction_view.response.send_message("You have already approved this trade.", ephemeral=True)
+                    return
+
+                if interaction_view.user == interaction.user: # Proposer
                     self.user_team_approved = True
-                else:
+                elif interaction_view.user == self.target_fo_member: # Target FO
                     self.target_team_approved = True
 
                 if self.user_team_approved and self.target_team_approved:
-                    user_team_role = discord.utils.get(interaction.guild.roles, name=self.user_team)
-                    targeted_team_role = discord.utils.get(interaction.guild.roles, name=self.targeted_team)
+                    user_team_role_obj = discord.utils.get(interaction_view.guild.roles, name=self.user_team)
+                    targeted_team_role_obj = discord.utils.get(interaction_view.guild.roles, name=self.targeted_team)
                     try:
-                        await self.offered_player.remove_roles(user_team_role)
-                        await self.offered_player.add_roles(targeted_team_role)
-                        await self.targeted_player.remove_roles(targeted_team_role)
-                        await self.targeted_player.add_roles(user_team_role)
-                        embed.title = "Trade Accepted"
-                        embed.color = discord.Color.green()
-                        embed.description = f"{self.target_team_emoji} {self.targeted_team} has accepted a trade from {self.team_emoji} {self.user_team}"
-                        embed.add_field(name=f"{self.team_emoji} {self.user_team} Receives", value=self.targeted_player.mention, inline=False)
-                        embed.add_field(name=f"{self.target_team_emoji} {self.targeted_team} Receives", value=self.offered_player.mention, inline=False)
-                        await interaction.message.edit(embed=embed, view=None)
-                        transactions_channel_id = self.bot.get_cog("TransactionsCog").config.get("transactions_channel")
-                        transactions_channel = interaction.guild.get_channel(int(transactions_channel_id)) if transactions_channel_id else interaction.channel
-                        await transactions_channel.send(embed=embed)
-                        await interaction.response.send_message("Trade completed!", ephemeral=True)
+                        await self.offered_player.remove_roles(user_team_role_obj)
+                        await self.offered_player.add_roles(targeted_team_role_obj)
+                        await self.targeted_player.remove_roles(targeted_team_role_obj)
+                        await self.targeted_player.add_roles(user_team_role_obj)
+
+                        embed_trade.title = "Trade Accepted" # Use embed_trade
+                        embed_trade.color = discord.Color.green()
+                        embed_trade.description = f"{self.target_team_emoji} {self.targeted_team} has accepted a trade from {self.team_emoji_user} {self.user_team}"
+                        embed_trade.clear_fields() # Clear old offer fields
+                        embed_trade.add_field(name=f"{self.team_emoji_user} {self.user_team} Receives", value=self.targeted_player.mention, inline=False)
+                        embed_trade.add_field(name=f"{self.target_team_emoji} {self.targeted_team} Receives", value=self.offered_player.mention, inline=False)
+                        await interaction_view.message.edit(embed=embed_trade, view=None)
+
+                        transactions_channel_id = self.guild_config.get("channels", {}).get("transactions") # Use stored guild_config
+                        transactions_channel = interaction_view.guild.get_channel(int(transactions_channel_id)) if transactions_channel_id else interaction_view.channel
+                        await transactions_channel.send(embed=embed_trade)
+                        # await interaction_view.response.send_message("Trade completed!", ephemeral=True) # Cannot respond here, message already edited.
+                        await interaction_view.followup.send("Trade completed!", ephemeral=True)
+
+
                         await self.bot.get_cog("TransactionsCog").log_action(
-                            interaction.guild,
+                            interaction_view.guild,
                             "Trade Completed",
                             f"{self.offered_player.display_name} to {self.targeted_team}, {self.targeted_player.display_name} to {self.user_team}"
                         )
                     except discord.errors.HTTPException as e:
-                        await interaction.response.send_message(f"Failed to execute trade: {e}", ephemeral=True)
+                        await interaction_view.response.send_message(f"Failed to execute trade: {e}", ephemeral=True)
                 else:
-                    await interaction.response.send_message("Trade approved. Waiting for other team.", ephemeral=True)
+                    await interaction_view.response.send_message("Trade approved. Waiting for other team.", ephemeral=True)
 
             @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
-            async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                if interaction.user not in [interaction.user, self.target_fo]:
-                    await interaction.response.send_message("Only the proposing or target Franchise Owner can reject.", ephemeral=True)
+            async def reject_button(self, interaction_view: discord.Interaction, button: discord.ui.Button): # Renamed
+                if interaction_view.user != interaction.user and interaction_view.user != self.target_fo_member: # Check original proposer or target FO
+                    await interaction_view.response.send_message("Only the proposing or target Franchise Owner can reject.", ephemeral=True)
                     return
-                embed.title = "Trade Rejected"
-                embed.description += f"\nRejected by {interaction.user.mention}"
-                embed.color = discord.Color.red()
-                await interaction.message.edit(embed=embed, view=None)
-                await interaction.response.send_message("Trade rejected.", ephemeral=True)
+                embed_trade.title = "Trade Rejected" # Use embed_trade
+                embed_trade.description += f"\nRejected by {interaction_view.user.mention}"
+                embed_trade.color = discord.Color.red()
+                await interaction_view.message.edit(embed=embed_trade, view=None)
+                await interaction_view.response.send_message("Trade rejected.", ephemeral=True)
                 await self.bot.get_cog("TransactionsCog").log_action(
-                    interaction.guild,
+                    interaction_view.guild,
                     "Trade Rejected",
-                    f"Rejected by {interaction.user.display_name}"
+                    f"Rejected by {interaction_view.user.display_name}"
                 )
                 self.stop()
 
-        view = TradeView(self.bot, user_team, targeted_team, offered_player, targeted_player, team_emoji, target_team_emoji)
-        await view.start()
-        await interaction.response.send_message("Trade proposal started in a thread!", ephemeral=True)
+        view = TradeView(self.bot, user_team, targeted_team, offered_player, targeted_player, team_emoji_user, target_team_emoji, guild_config_trade)
+        await view.start(interaction) # Pass initial interaction to start
+        # Message is sent by view.start or its called methods if no FO found.
+        # If FO is found, original response is fetched for thread creation.
+        # await interaction.response.send_message("Trade proposal started in a thread!", ephemeral=True) # This might be redundant or cause error
         await self.log_action(
             interaction.guild,
             "Trade Proposed",

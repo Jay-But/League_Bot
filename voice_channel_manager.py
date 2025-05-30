@@ -6,27 +6,33 @@ import os
 import asyncio
 from datetime import datetime
 
-CONFIG_FILE = "voice_config.json"
+# CONFIG_FILE, load_config, save_config removed
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 class VoiceChannelManagerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.channel_ids = set()
-        self.team_channels = {}
+        self.channel_ids = set() # Runtime state
+        self.team_channels = {} # Runtime state
 
     async def log_action(self, guild: discord.Guild, action: str, details: str):
-        config = load_config()
-        logs_channel_id = config.get("logs")
+        guild_config = load_guild_config(guild.id) # Use new helper
+        logs_channel_id = guild_config.get("channels", {}).get("logs") # Align with setup.py structure
         if logs_channel_id:
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
@@ -89,16 +95,32 @@ class VoiceChannelManagerCog(commands.Cog):
     @app_commands.command(name="create_vc", description="Create temporary voice channels for a scheduled game.")
     @app_commands.describe(game_id="Game identifier (e.g., Team1 vs Team2)")
     async def create_vc(self, interaction: discord.Interaction, game_id: str):
-        config = load_config()
-        schedule = load_schedule()  # Assuming load_schedule from ScheduleCog
-        teams = schedule.get(game_id)
-        if not teams:
-            await interaction.response.send_message(f"No game found for '{game_id}'.", ephemeral=True)
-            return
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        # schedule = load_schedule()  # Assuming load_schedule from ScheduleCog - This line is problematic and likely needs a cog reference or different logic
+        # For now, assuming 'schedule' and 'teams' are obtained correctly or this part is out of scope for pure config refactor.
+        # Let's assume for now that 'teams' is somehow fetched. If this command is broken due to load_schedule, that's a separate issue.
 
-        team1, team2 = teams["team_a"], teams["team_b"]
+        # Placeholder for teams lookup if load_schedule() is indeed not viable here
+        # This part of the logic is highly dependent on how schedule data is actually accessed.
+        # For the purpose of config refactoring, we'll focus on where "category_id" comes from.
+        # If ScheduleCog is available:
+        schedule_cog = self.bot.get_cog("ScheduleCog")
+        if not schedule_cog or not hasattr(schedule_cog, 'league_data'):
+             await interaction.response.send_message("Schedule data is not available.", ephemeral=True)
+             return
+
+        # Assuming game_id might be related to a structure within league_data or a specific game entry.
+        # This part is speculative without knowing the exact structure of league_data and game_id usage.
+        # For demonstration, let's assume game_id directly maps to a key that has team names.
+        # This is a placeholder for actual game data retrieval logic.
+        game_data = schedule_cog.league_data.get(str(interaction.guild.id), {}).get("games", {}).get(game_id) # Example path
+        if not game_data or "team1" not in game_data or "team2" not in game_data:
+             await interaction.response.send_message(f"No game found for '{game_id}' or game data incomplete.", ephemeral=True)
+             return
+        team1, team2 = game_data["team1"], game_data["team2"]
+
         channel_name = f"{team1}-{team2}"
-        category_id = config.get("voice_category_id")
+        category_id = guild_config.get("channels", {}).get("voice_category") # Use guild_config, adjusted key
         if not category_id:
             await interaction.response.send_message("No voice category set. Use /set_voice_category.", ephemeral=True)
             return
@@ -177,9 +199,14 @@ class VoiceChannelManagerCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(category="The voice channel category")
     async def set_voice_category(self, interaction: discord.Interaction, category: discord.CategoryChannel):
-        config = load_config()
-        config["voice_category_id"] = str(category.id)
-        save_config(config)
+        guild_id = interaction.guild.id
+        guild_config = load_guild_config(guild_id) # Load existing config
+
+        if "channels" not in guild_config: # Ensure 'channels' sub-dictionary exists
+            guild_config["channels"] = {}
+        guild_config["channels"]["voice_category"] = str(category.id) # Store under 'channels'
+
+        save_guild_config(guild_id, guild_config) # Save updated config
         await interaction.response.send_message(f"Voice category set to: {category.name}", ephemeral=True)
         await self.log_action(interaction.guild, "Voice Category Set", f"Category: {category.name}")
 

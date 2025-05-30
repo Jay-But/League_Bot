@@ -8,26 +8,31 @@ import pytz
 import asyncio
 from utils.team_utils import team_autocomplete
 
-CONFIG_FILE = "config/setup.json"
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True)
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 class GameManagementCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
-        self.team_emojis = self.config.get("team_emojis", {})
+        # self.config will be loaded per-guild in commands
+        # self.team_emojis will be loaded from guild_config per-command
 
     async def log_action(self, guild, action, details):
-        logs_channel_id = self.config.get("logs_channel")
+        guild_config = load_guild_config(guild.id)
+        logs_channel_id = guild_config.get("logs_channel")
         if logs_channel_id:
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
@@ -38,12 +43,6 @@ class GameManagementCog(commands.Cog):
                     timestamp=discord.utils.utcnow()
                 )
                 await logs_channel.send(embed=embed)
-
-    def get_guild_config(self, guild_id):
-        guild_id_str = str(guild_id)
-        if guild_id_str not in self.config:
-            self.config[guild_id_str] = {}
-        return self.config[guild_id_str]
 
     # CPU Break: Pause after cog initialization
     # asyncio.sleep(2) simulated during code generation
@@ -63,7 +62,8 @@ class GameManagementCog(commands.Cog):
         )
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
-        pickups_channel_id = self.config.get("pickups_channel")
+        guild_config = load_guild_config(interaction.guild.id)
+        pickups_channel_id = guild_config.get("pickups_channel")
         pickups_channel = interaction.guild.get_channel(int(pickups_channel_id)) if pickups_channel_id else None
         if pickups_channel:
             await pickups_channel.send(embed=embed)
@@ -114,7 +114,7 @@ class GameManagementCog(commands.Cog):
         channel: str = None,
         thread: str = None
     ):
-        guild_config = self.get_guild_config(interaction.guild.id)
+        guild_config = load_guild_config(interaction.guild.id)
         if team1 not in guild_config.get("teams", []) or team2 not in guild_config.get("teams", []):
             await interaction.response.send_message("Invalid teams. Must be created via /setup.", ephemeral=True)
             return
@@ -143,8 +143,9 @@ class GameManagementCog(commands.Cog):
 
         team1_role = discord.utils.get(interaction.guild.roles, name=team1)
         team2_role = discord.utils.get(interaction.guild.roles, name=team2)
-        team1_emoji = self.team_emojis.get(team1, "")
-        team2_emoji = self.team_emojis.get(team2, "")
+        team_emojis = guild_config.get("team_emojis", {})
+        team1_emoji = team_emojis.get(team1, "")
+        team2_emoji = team_emojis.get(team2, "")
         formatted_date = game_datetime.strftime("%A, %B %d, %Y")
         embed = discord.Embed(
             title=f"Game Report: {team1_emoji} {team1} vs {team2_emoji} {team2}",
@@ -202,7 +203,7 @@ class GameManagementCog(commands.Cog):
         elif channel:
             target = interaction.guild.get_channel(int(channel)) if channel.isdigit() else None
         else:
-            guild_config = self.get_guild_config(interaction.guild.id)
+            # guild_config already loaded
             scores_channel_id = guild_config.get("channels", {}).get("scores")
             score_report_channels = [scores_channel_id] if scores_channel_id else []
             if score_report_channels:
@@ -214,14 +215,14 @@ class GameManagementCog(commands.Cog):
         if target:
             await target.send(embed=embed, view=view)
         # Update team records based on scores
-        guild_config = self.get_guild_config(interaction.guild.id)
+        # guild_config already loaded
         if "team_records" not in guild_config:
             guild_config["team_records"] = {}
             
         # Initialize team records if not exists
-        for team in [team1, team2]:
-            if team not in guild_config["team_records"]:
-                guild_config["team_records"][team] = {"wins": 0, "losses": 0}
+        for team_name_record in [team1, team2]: # Renamed to avoid conflict
+            if team_name_record not in guild_config["team_records"]:
+                guild_config["team_records"][team_name_record] = {"wins": 0, "losses": 0}
         
         # Determine winner and update records
         if score_team1 > score_team2:
@@ -240,8 +241,7 @@ class GameManagementCog(commands.Cog):
             loser = None
             
         # Save updated configuration
-        self.config[str(interaction.guild.id)] = guild_config
-        save_config(self.config)
+        save_guild_config(interaction.guild.id, guild_config)
 
         await interaction.response.send_message("Game report submitted!", ephemeral=True)
         
@@ -260,15 +260,18 @@ class GameManagementCog(commands.Cog):
         thread="Thread ID"
     )
     async def sendscorereport(self, interaction: discord.Interaction, channels: str = None, thread: str = None):
-        self.config = load_config()
+        guild_config = load_guild_config(interaction.guild.id)
         if channels:
             try:
                 channel_ids = [int(cid.strip()) for cid in channels.split(",") if cid.strip().isdigit()]
                 if not channel_ids:
                     await interaction.response.send_message("No valid channel IDs provided.", ephemeral=True)
                     return
-                self.config["score_report_channels"] = channel_ids
-                save_config(self.config)
+
+                if "channels" not in guild_config: # ensure 'channels' key exists
+                    guild_config["channels"] = {}
+                guild_config["channels"]["score_report_channels"] = channel_ids # Store under 'channels' key
+                save_guild_config(interaction.guild.id, guild_config)
                 await interaction.response.send_message(
                     f"Score reports set for channels: {', '.join(f'<#{cid}>' for cid in channel_ids)}",
                     ephemeral=True
@@ -279,8 +282,10 @@ class GameManagementCog(commands.Cog):
             if not thread.isdigit():
                 await interaction.response.send_message("Invalid thread ID.", ephemeral=True)
                 return
-            self.config["score_report_thread"] = int(thread)
-            save_config(self.config)
+            if "channels" not in guild_config: # ensure 'channels' key exists
+                guild_config["channels"] = {}
+            guild_config["channels"]["score_report_thread"] = int(thread) # Store under 'channels' key
+            save_guild_config(interaction.guild.id, guild_config)
             await interaction.response.send_message(f"Score reports set for thread: <#{thread}>", ephemeral=True)
         else:
             await interaction.response.send_message("Please provide channels or a thread ID.", ephemeral=True)
@@ -312,10 +317,27 @@ class GameManagementCog(commands.Cog):
             )
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
-        guild_config = self.get_guild_config(interaction.guild.id)
-        scores_channel_id = guild_config.get("channels", {}).get("scores")
-        score_report_channels = [scores_channel_id] if scores_channel_id else []
-        for channel_id in score_report_channels:
+        guild_config = load_guild_config(interaction.guild.id)
+        # Assuming score_report_channels is a list of channels where leaderboards can be posted
+        # This was previously configured by sendscorereport.
+        # If "scores" is a specific channel for scores, and "score_report_channels" is for reports,
+        # this logic might need adjustment based on intended behavior.
+        # For now, using "score_report_channels" as set by sendscorereport
+        score_report_channel_ids = guild_config.get("channels", {}).get("score_report_channels", [])
+        score_report_thread_id = guild_config.get("channels", {}).get("score_report_thread")
+
+        target_channel_ids = score_report_channel_ids
+        if score_report_thread_id and score_report_thread_id not in target_channel_ids:
+             # Assuming thread is also a valid target for leaderboards
+            target_channel_ids.append(score_report_thread_id)
+
+        if not target_channel_ids:
+             # Fallback to a "scores" channel if no specific report channels/thread are set
+            scores_channel_id = guild_config.get("channels", {}).get("scores")
+            if scores_channel_id:
+                target_channel_ids.append(scores_channel_id)
+
+        for channel_id in target_channel_ids:
             channel = interaction.guild.get_channel(int(channel_id))
             if channel:
                 view = discord.ui.View()
@@ -344,10 +366,21 @@ class GameManagementCog(commands.Cog):
         )
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
-        guild_config = self.get_guild_config(interaction.guild.id)
-        scores_channel_id = guild_config.get("channels", {}).get("scores")
-        score_report_channels = [scores_channel_id] if scores_channel_id else []
-        for channel_id in score_report_channels:
+        guild_config = load_guild_config(interaction.guild.id)
+        # Using the same channel logic as the player leaderboard command
+        score_report_channel_ids = guild_config.get("channels", {}).get("score_report_channels", [])
+        score_report_thread_id = guild_config.get("channels", {}).get("score_report_thread")
+
+        target_channel_ids = score_report_channel_ids
+        if score_report_thread_id and score_report_thread_id not in target_channel_ids:
+            target_channel_ids.append(score_report_thread_id)
+
+        if not target_channel_ids:
+            scores_channel_id = guild_config.get("channels", {}).get("scores")
+            if scores_channel_id:
+                target_channel_ids.append(scores_channel_id)
+
+        for channel_id in target_channel_ids:
             channel = interaction.guild.get_channel(int(channel_id))
             if channel:
                 await channel.send(embed=embed)
@@ -372,7 +405,7 @@ class GameManagementCog(commands.Cog):
     @app_commands.describe(winning_team="The team that won (optional)", losing_team="The team that lost (optional)")
     @app_commands.autocomplete(winning_team=team_autocomplete, losing_team=team_autocomplete)
     async def teamleaderboard(self, interaction: discord.Interaction, winning_team: str = None, losing_team: str = None):
-        guild_config = self.get_guild_config(interaction.guild.id)
+        guild_config = load_guild_config(interaction.guild.id)
         teams = guild_config.get("teams", [])
         
         if not teams:
@@ -401,11 +434,7 @@ class GameManagementCog(commands.Cog):
             guild_config["team_records"][losing_team]["losses"] += 1
             
             # Save configuration
-            CONFIG_FILE = f"config/setup_{interaction.guild.id}.json"
-            import os
-            os.makedirs("config", exist_ok=True)
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(guild_config, f, indent=4)
+            save_guild_config(interaction.guild.id, guild_config)
                 
             await interaction.response.send_message(f"✅ Recorded: {winning_team} defeated {losing_team}", ephemeral=True)
             
@@ -438,7 +467,8 @@ class GameManagementCog(commands.Cog):
             win_rate = (wins / total_games * 100) if total_games > 0 else 0
             
             team_role = discord.utils.get(interaction.guild.roles, name=team)
-            team_emoji = self.team_emojis.get(team, "")
+            team_emojis = guild_config.get("team_emojis", {})
+            team_emoji = team_emojis.get(team, "")
             
             leaderboard_text.append(
                 f"**{i}.** {team_emoji} {team}\n"

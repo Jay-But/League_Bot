@@ -9,33 +9,31 @@ from utils.team_utils import team_autocomplete
 from datetime import datetime
 import pytz
 
-CONFIG_FILE = "config/setup.json"
+# CONFIG_FILE, load_config, save_config removed
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+def load_guild_config(guild_id):
+    config_file = f"config/setup_{str(guild_id)}.json"
+    if os.path.exists(config_file):
+        with open(config_file, 'r') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {} # Return empty if file is corrupted
     return {}
 
-def save_config(config):
-    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
+def save_guild_config(guild_id, config_data):
+    os.makedirs("config", exist_ok=True) # Ensure 'config' directory exists
+    config_file = f"config/setup_{str(guild_id)}.json"
+    with open(config_file, 'w') as f:
+        json.dump(config_data, f, indent=4)
 
 class TeamRegistrationCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = load_config()
+        # self.config removed
 
     def get_guild_config(self, guild_id):
-        """Load guild-specific configuration from setup"""
-        config_file = f"config/setup_{guild_id}.json"
-        if os.path.exists(config_file):
-            with open(config_file, 'r') as f:
-                content = f.read().strip()
-                if content:
-                    return json.loads(content)
-        return {}
+        return load_guild_config(guild_id) # Use the standalone helper
 
     def has_admin_roles(self, interaction: discord.Interaction):
         """Check if user has admin or moderator roles"""
@@ -117,23 +115,25 @@ class TeamRegistrationCog(commands.Cog):
                 
                 # Register the team
                 role = self.view.selected_role
-                cog = interaction.client.get_cog("TeamRegistrationCog")
+                # cog = interaction.client.get_cog("TeamRegistrationCog") # Not needed for config access
+
+                # Load, update, and save guild-specific config
+                guild_id = interaction.guild.id
+                guild_config = load_guild_config(guild_id)
                 
-                # Update config
-                if "teams" not in cog.config:
-                    cog.config["teams"] = []
-                if "team_emojis" not in cog.config:
-                    cog.config["team_emojis"] = {}
+                if "teams" not in guild_config:
+                    guild_config["teams"] = []
+                if "team_emojis" not in guild_config:
+                    guild_config["team_emojis"] = {}
                 
                 # Add team if not already registered
-                if role.name not in cog.config["teams"]:
-                    cog.config["teams"].append(role.name)
+                if role.name not in guild_config["teams"]:
+                    guild_config["teams"].append(role.name)
                 
                 # Add/update emoji mapping
-                cog.config["team_emojis"][role.name] = str(selected_emoji)
+                guild_config["team_emojis"][role.name] = str(selected_emoji)
                 
-                # Save config
-                save_config(cog.config)
+                save_guild_config(guild_id, guild_config)
                 
                 # Create success embed
                 embed = discord.Embed(
@@ -192,8 +192,9 @@ class TeamRegistrationCog(commands.Cog):
 
     @app_commands.command(name="listteams", description="List all registered teams.")
     async def listteams(self, interaction: discord.Interaction):
-        teams = self.config.get("teams", [])
-        team_emojis = self.config.get("team_emojis", {})
+        guild_config = load_guild_config(interaction.guild.id) # Load guild_config
+        teams = guild_config.get("teams", [])
+        team_emojis = guild_config.get("team_emojis", {})
         
         if not teams:
             await interaction.response.send_message("No teams registered.", ephemeral=True)
