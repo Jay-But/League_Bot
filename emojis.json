@@ -1,0 +1,37 @@
+
+{
+  "teams": {
+    "Arizona Cardinals": "https://cdn.discordapp.com/attachments/123456789/cardinals.png",
+    "Atlanta Falcons": "https://cdn.discordapp.com/attachments/123456789/falcons.png",
+    "Baltimore Ravens": "https://cdn.discordapp.com/attachments/123456789/ravens.png",
+    "Buffalo Bills": "https://cdn.discordapp.com/attachments/123456789/bills.png",
+    "Carolina Panthers": "https://cdn.discordapp.com/attachments/123456789/panthers.png",
+    "Chicago Bears": "https://cdn.discordapp.com/attachments/123456789/bears.png",
+    "Cincinnati Bengals": "https://cdn.discordapp.com/attachments/123456789/bengals.png",
+    "Cleveland Browns": "https://cdn.discordapp.com/attachments/123456789/browns.png",
+    "Dallas Cowboys": "https://cdn.discordapp.com/attachments/123456789/cowboys.png",
+    "Denver Broncos": "https://cdn.discordapp.com/attachments/123456789/broncos.png",
+    "Detroit Lions": "https://cdn.discordapp.com/attachments/123456789/lions.png",
+    "Green Bay Packers": "https://cdn.discordapp.com/attachments/123456789/packers.png",
+    "Houston Texans": "https://cdn.discordapp.com/attachments/123456789/texans.png",
+    "Indianapolis Colts": "https://cdn.discordapp.com/attachments/123456789/colts.png",
+    "Jacksonville Jaguars": "https://cdn.discordapp.com/attachments/123456789/jaguars.png",
+    "Kansas City Chiefs": "https://cdn.discordapp.com/attachments/123456789/chiefs.png",
+    "Las Vegas Raiders": "https://cdn.discordapp.com/attachments/123456789/raiders.png",
+    "Los Angeles Chargers": "https://cdn.discordapp.com/attachments/123456789/chargers.png",
+    "Los Angeles Rams": "https://cdn.discordapp.com/attachments/123456789/rams.png",
+    "Miami Dolphins": "https://cdn.discordapp.com/attachments/123456789/dolphins.png",
+    "Minnesota Vikings": "https://cdn.discordapp.com/attachments/123456789/vikings.png",
+    "New England Patriots": "https://cdn.discordapp.com/attachments/123456789/patriots.png",
+    "New Orleans Saints": "https://cdn.discordapp.com/attachments/123456789/saints.png",
+    "New York Giants": "https://cdn.discordapp.com/attachments/123456789/giants.png",
+    "New York Jets": "https://cdn.discordapp.com/attachments/123456789/jets.png",
+    "Philadelphia Eagles": "https://cdn.discordapp.com/attachments/123456789/eagles.png",
+    "Pittsburgh Steelers": "https://cdn.discordapp.com/attachments/123456789/steelers.png",
+    "San Francisco 49ers": "https://cdn.discordapp.com/attachments/123456789/49ers.png",
+    "Seattle Seahawks": "https://cdn.discordapp.com/attachments/123456789/seahawks.png",
+    "Tampa Bay Buccaneers": "https://cdn.discordapp.com/attachments/123456789/buccaneers.png",
+    "Tennessee Titans": "https://cdn.discordapp.com/attachments/123456789/titans.png",
+    "Washington Commanders": "https://cdn.discordapp.com/attachments/123456789/commanders.png"
+  }
+}
