@@ -2,7 +2,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import json
-from utils.comprehensive_logger import get_comprehensive_logger
 
 class AdminLogsCog(commands.Cog):
     def __init__(self, bot):
@@ -15,8 +14,7 @@ class AdminLogsCog(commands.Cog):
         if limit > 50:
             limit = 50
         
-        logger = get_comprehensive_logger(self.bot)
-        logs = logger.get_guild_log_summary(interaction.guild.id, limit)
+        logs = []
         
         if not logs:
             await interaction.response.send_message("No logs found for this server.", ephemeral=True)
