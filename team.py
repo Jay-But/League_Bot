@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 import pytz
 import asyncio
-from utils.team_utils import team_autocomplete
+from utils.team_utils import team_autocomplete # Assuming team_autocomplete remains in team_utils
 
 CONFIG_FILE = "config/setup.json"
 
@@ -35,7 +35,7 @@ class ConfirmModal(discord.ui.Modal):
             return
         await self.callback(interaction)
 
-class TeamManagementCog(commands.Cog):
+class TeamCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = load_config()
@@ -90,7 +90,7 @@ class TeamManagementCog(commands.Cog):
             logs_channel = guild.get_channel(int(logs_channel_id))
             if logs_channel:
                 embed = discord.Embed(
-                    title=f"Team Management: {action}",
+                    title=f"Team: {action}",
                     description=details,
                     color=discord.Color.blue(),
                     timestamp=discord.utils.utcnow()
@@ -623,4 +623,4 @@ class TeamManagementCog(commands.Cog):
     # asyncio.sleep(2) simulated during code generation
 
 async def setup(bot):
-    await bot.add_cog(TeamManagementCog(bot))
+    await bot.add_cog(TeamCog(bot))

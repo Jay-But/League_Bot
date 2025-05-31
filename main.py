@@ -23,7 +23,6 @@ async def load_extensions():
         'cogs.retire_player',
         'cogs.schedule',
         'cogs.setup_cog',
-        'cogs.team_management',
         'cogs.templates',
         'cogs.transactions',
         'cogs.voice_channel_manager',
