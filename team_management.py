@@ -4,9 +4,7 @@ from discord.ext import commands
 import json
 import os
 from datetime import datetime
-import pytz
 import asyncio
-from utils.team_utils import team_autocomplete
 
 CONFIG_FILE = "config/setup.json"
 
@@ -19,6 +17,42 @@ def load_config():
 def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=4)
+
+async def team_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    config_file = "config/setup.json"  # Path to the global config
+    teams = []
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    config_data = json.loads(content)
+                    teams = config_data.get("teams", [])
+                else:
+                    # Config file is empty
+                    teams = []
+        except json.JSONDecodeError:
+            # Config file is malformed
+            teams = []
+            print(f"Error decoding {config_file}")
+        except Exception as e:
+            # Other potential errors reading the file
+            teams = []
+            print(f"Error reading {config_file}: {e}")
+    else:
+        # Config file does not exist
+        teams = []
+        print(f"{config_file} not found")
+
+    if not teams: # If teams list is empty for any reason
+        return [app_commands.Choice(name="No teams configured. Use /addteam.", value="NO_TEAMS_CONFIGURED_ERROR")]
+
+    choices = [
+        app_commands.Choice(name=team_name, value=team_name)
+        for team_name in teams if current.lower() in team_name.lower()
+    ]
+    # Limit to 25 choices as per Discord's limit
+    return choices[:25]
 
 class ConfirmModal(discord.ui.Modal):
     def __init__(self, action, callback):

@@ -3,11 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
-from utils.guild_logger import get_guild_logger
-from utils.comprehensive_logger import get_comprehensive_logger
-from utils.team_utils import team_autocomplete
 from datetime import datetime
-import pytz
 
 CONFIG_FILE = "config/setup.json"
 
@@ -50,11 +46,6 @@ class TeamRegistrationCog(commands.Cog):
             if role_id and role_id in user_role_ids:
                 return True
         return interaction.user.guild_permissions.administrator
-
-    async def log_action(self, guild, action, details, user=None):
-        # Use guild logger for comprehensive logging
-        guild_logger = get_guild_logger(self.bot)
-        await guild_logger.log_action(guild, f"Team Registration: {action}", details, user)
 
     @app_commands.command(name="addteam", description="Register a role as a team with an associated emoji.")
     async def addteam(self, interaction: discord.Interaction):
@@ -152,23 +143,6 @@ class TeamRegistrationCog(commands.Cog):
                     embed.set_thumbnail(url=interaction.guild.icon.url)
                 
                 await interaction.response.edit_message(embed=embed, view=None)
-                
-                # Log the action
-                await cog.log_action(
-                    interaction.guild,
-                    "Team Registered",
-                    f"Role: {role.name}, Emoji: {selected_emoji.name}, Members: {len(role.members)}",
-                    interaction.user
-                )
-                
-                # Comprehensive logging
-                comp_logger = get_comprehensive_logger(interaction.client)
-                await comp_logger.log_team_creation(
-                    interaction.guild,
-                    role.name,
-                    interaction.user,
-                    selected_emoji
-                )
 
         class TeamRegistrationView(discord.ui.View):
             def __init__(self):

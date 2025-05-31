@@ -3,7 +3,6 @@ from discord.ext import commands
 import os
 import asyncio
 import logging
-from utils.comprehensive_logger import get_comprehensive_logger
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -45,13 +44,6 @@ async def on_ready():
     # Load extensions
     await load_extensions()
 
-    # Initialize comprehensive logger
-    logger = get_comprehensive_logger(bot)
-    
-    # Log bot startup for all guilds
-    for guild in bot.guilds:
-        await logger.log_bot_event(guild, "BOT_STARTUP", f"Bot started and ready in {guild.name}")
-
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -62,8 +54,7 @@ async def on_ready():
 async def on_interaction(interaction):
     """Log all slash command usage"""
     if interaction.type == discord.InteractionType.application_command:
-        logger = get_comprehensive_logger(bot)
-        await logger.log_command_usage(interaction)
+        pass # Placeholder for future logging or actions
 
 @bot.event
 async def on_guild_join(guild):
