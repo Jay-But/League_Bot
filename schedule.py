@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timedelta
 import pytz
 import asyncio
-from utils.team_utils import team_autocomplete
+from .team_management import team_autocomplete
 
 DATA_FILE = "league_data.json"
 CONFIG_FILE = "config/setup.json"

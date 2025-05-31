@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
-from utils.team_utils import team_autocomplete
+from .team_management import team_autocomplete
 
 class Templates(commands.Cog):
     def __init__(self, bot):

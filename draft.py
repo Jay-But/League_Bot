@@ -6,7 +6,7 @@ import random
 import os
 from datetime import datetime
 import pytz
-from utils.team_utils import team_autocomplete
+from .team_management import team_autocomplete
 
 CONFIG_FILE = "config/setup.json"
 DRAFT_FILE = "config/draft.json"

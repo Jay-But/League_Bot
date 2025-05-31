@@ -3,8 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
-from utils.guild_logger import get_guild_logger
-from utils.team_utils import team_autocomplete
+from .team_management import team_autocomplete
 from datetime import datetime
 import pytz
 import asyncio

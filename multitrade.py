@@ -6,7 +6,7 @@ import json
 import pytz
 from datetime import datetime
 import asyncio
-from utils.team_utils import team_autocomplete
+from .team_management import team_autocomplete
 
 CONFIG_FILE = "config/setup.json"
 DRAFT_FILE = "config/draft.json"
